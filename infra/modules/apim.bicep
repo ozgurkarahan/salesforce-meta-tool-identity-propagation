@@ -16,11 +16,8 @@ param appInsightsConnectionString string
 @description('Log Analytics workspace resource ID for diagnostic settings')
 param logAnalyticsWorkspaceId string
 
-@description('Key Vault URI for certificate references (empty = no cert)')
-param keyVaultUri string = ''
-
-@description('Name of the SF JWT Bearer certificate in Key Vault (empty = no cert)')
-param sfJwtBearerCertName string = ''
+// NOTE: Key Vault certificate params removed — cert is now created by
+// apim-jwt-bearer-cert.bicep at Tier 4.5 (after KV RBAC is in place).
 
 var openaiBackendUrl = '${cognitiveEndpoint}openai'
 
@@ -235,18 +232,9 @@ resource apimDiagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-0
   }
 }
 
-// --- SF JWT Bearer Certificate (OBO mode) ---
-// References the certificate from Key Vault so APIM policies can use it for JWT signing.
-// Certificate is accessed via context.Deployment.Certificates["sf-jwt-bearer"] in policy XML.
-resource sfJwtBearerCert 'Microsoft.ApiManagement/service/certificates@2024-06-01-preview' = if (!empty(keyVaultUri) && !empty(sfJwtBearerCertName)) {
-  parent: apim
-  name: 'sf-jwt-bearer'
-  properties: {
-    keyVault: {
-      secretIdentifier: '${keyVaultUri}secrets/${sfJwtBearerCertName}'
-    }
-  }
-}
+// NOTE: SF JWT Bearer Certificate (OBO mode) is created in main.bicep at Tier 4.5
+// (after keyvaultApimAccess grants APIM the "Key Vault Secrets User" role).
+// The cert is accessed via context.Deployment.Certificates["sf-jwt-bearer"] in policy XML.
 
 output apimGatewayUrl string = apim.properties.gatewayUrl
 output apimName string = apim.name

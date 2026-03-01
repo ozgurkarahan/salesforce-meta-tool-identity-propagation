@@ -26,6 +26,15 @@ param sfOboClientId string = 'placeholder-updated-by-hook'
 @description('Salesforce login URL for JWT Bearer token exchange')
 param sfOboLoginUrl string = 'https://login.salesforce.com'
 
+@description('Thumbprint of the SF JWT Bearer signing certificate in APIM')
+param sfJwtBearerCertThumbprint string = ''
+
+@description('SF username for the service account used for user lookups')
+param sfServiceAccountUsername string = ''
+
+@description('Name of the JWT claim containing the user identity (e.g., oid for Azure AD, sub for Okta/PingFed)')
+param identityClaimName string = 'oid'
+
 // --------------------------------------------------------------------------
 // Reference existing APIM instance
 // --------------------------------------------------------------------------
@@ -64,6 +73,36 @@ resource sfOboLoginUrlNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01
   properties: {
     displayName: 'SfOboLoginUrl'
     value: sfOboLoginUrl
+    secret: false
+  }
+}
+
+resource sfJwtBearerCertThumbprintNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01-preview' = if (!empty(sfJwtBearerCertThumbprint)) {
+  parent: apim
+  name: 'SfJwtBearerCertThumbprint'
+  properties: {
+    displayName: 'SfJwtBearerCertThumbprint'
+    value: sfJwtBearerCertThumbprint
+    secret: false
+  }
+}
+
+resource sfServiceAccountUsernameNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01-preview' = if (!empty(sfServiceAccountUsername)) {
+  parent: apim
+  name: 'SfServiceAccountUsername'
+  properties: {
+    displayName: 'SfServiceAccountUsername'
+    value: sfServiceAccountUsername
+    secret: false
+  }
+}
+
+resource identityClaimNameNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01-preview' = {
+  parent: apim
+  name: 'IdentityClaimName'
+  properties: {
+    displayName: 'IdentityClaimName'
+    value: identityClaimName
     secret: false
   }
 }
@@ -132,6 +171,9 @@ resource sfMcpOboApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-0
     tenantIdNV
     sfOboClientIdNV
     sfOboLoginUrlNV
+    sfJwtBearerCertThumbprintNV
+    sfServiceAccountUsernameNV
+    identityClaimNameNV
   ]
 }
 

@@ -35,3 +35,9 @@ _oauth_state.json
 
 # Git worktrees
 .worktree/
+
+# Certificates (private keys — never commit)
+certs/
+
+# Temp deploy directories
+.tmp-*/

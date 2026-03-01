@@ -147,6 +147,7 @@ resource sfPrmOpPolicy 'Microsoft.ApiManagement/service/apis/operations/policies
     format: 'rawxml'
     value: loadTextContent('../policies/sf-mcp-prm-policy.xml')
   }
+  dependsOn: [ sfInstanceUrlNV, apimGatewayUrlNV ]
 }
 
 // --------------------------------------------------------------------------

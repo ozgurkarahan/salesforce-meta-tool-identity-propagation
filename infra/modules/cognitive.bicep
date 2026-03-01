@@ -13,6 +13,12 @@ param logAnalyticsWorkspaceId string
 @description('Suffix for the AI Services account name (increment after azd down --purge)')
 param accountSuffix string = '3'
 
+@description('App Insights resource ID for Foundry monitoring (empty = skip)')
+param appInsightsId string = ''
+
+@description('App Insights connection string for Foundry monitoring')
+param appInsightsConnectionString string = ''
+
 // --- AI Services Account (Foundry parent — replaces ML Hub pattern) ---
 resource cognitiveAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   name: 'aoai-${name}${accountSuffix}'
@@ -59,6 +65,25 @@ resource aoaiConnection 'Microsoft.CognitiveServices/accounts/connections@2025-0
     metadata: {
       ApiType: 'azure'
       ResourceId: cognitiveAccount.id
+    }
+  }
+}
+
+// --- App Insights Connection (account-level, shared to all projects for Foundry monitoring) ---
+resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/connections@2025-04-01-preview' = if (!empty(appInsightsId)) {
+  parent: cognitiveAccount
+  name: 'appinsights'
+  properties: {
+    category: 'AppInsights'
+    authType: 'ApiKey'
+    target: appInsightsId
+    isSharedToAll: true
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: appInsightsId
+    }
+    credentials: {
+      key: appInsightsConnectionString
     }
   }
 }

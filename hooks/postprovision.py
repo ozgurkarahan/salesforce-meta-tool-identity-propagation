@@ -390,8 +390,9 @@ def update_obo_apim_named_values():
 def update_obo_connection():
     """Recreate the OBO connection via ARM REST to ensure it's properly registered.
 
-    The OBO connection uses authType AAD — Foundry passes the user's Azure AD
-    token through to APIM, where APIM handles the SF token exchange.
+    The OBO connection uses authType UserEntraToken — Foundry passes the user's
+    Azure AD token through to APIM, where APIM handles the SF token exchange.
+    Note: authType 'AAD' is NOT valid for RemoteTool connections.
     """
     connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
     sf_mcp_obo_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
@@ -427,7 +428,7 @@ def update_obo_connection():
 
     body = {
         "properties": {
-            "authType": "AAD",
+            "authType": "UserEntraToken",
             "category": "RemoteTool",
             "target": sf_mcp_obo_endpoint,
             "metadata": {"type": "custom_MCP"},

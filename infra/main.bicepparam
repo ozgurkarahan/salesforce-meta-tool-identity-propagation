@@ -8,3 +8,6 @@ param sfConnectedAppClientId = readEnvironmentVariable('SF_CONNECTED_APP_CLIENT_
 param sfConnectedAppClientSecret = readEnvironmentVariable('SF_CONNECTED_APP_CLIENT_SECRET', '')
 param sfAuthMode = readEnvironmentVariable('SF_AUTH_MODE', 'oauth2')
 param sfJwtBearerCertName = readEnvironmentVariable('SF_JWT_BEARER_CERT_NAME', 'sf-jwt-bearer')
+param sfJwtBearerCertThumbprint = readEnvironmentVariable('SF_JWT_BEARER_CERT_THUMBPRINT', '')
+param sfServiceAccountUsername = readEnvironmentVariable('SF_SERVICE_ACCOUNT_USERNAME', '')
+param identityClaimName = readEnvironmentVariable('IDENTITY_CLAIM_NAME', 'oid')

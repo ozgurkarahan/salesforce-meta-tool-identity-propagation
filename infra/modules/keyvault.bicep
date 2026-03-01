@@ -28,12 +28,12 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 
 // Grant APIM "Key Vault Secrets User" role so it can read certificates.
 // Certificates in Key Vault are accessed as secrets (the PFX/PEM bundle).
-// Role: Key Vault Secrets User (4a9fbe14-16c3-4116-8168-5ed32a473e68)
+// Role: Key Vault Secrets User (4633458b-17de-408a-b874-0445c86b69e6)
 resource apimKvSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(apimPrincipalId)) {
-  name: guid(keyVault.id, apimPrincipalId, '4a9fbe14-16c3-4116-8168-5ed32a473e68')
+  name: guid(keyVault.id, apimPrincipalId, '4633458b-17de-408a-b874-0445c86b69e6')
   scope: keyVault
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4a9fbe14-16c3-4116-8168-5ed32a473e68')
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
     principalId: apimPrincipalId
     principalType: 'ServicePrincipal'
   }

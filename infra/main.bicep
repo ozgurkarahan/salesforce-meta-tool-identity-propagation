@@ -28,6 +28,15 @@ param sfAuthMode string = 'oauth2'
 @description('Name of the SF JWT Bearer certificate in Key Vault (uploaded separately)')
 param sfJwtBearerCertName string = 'sf-jwt-bearer'
 
+@description('Thumbprint of the SF JWT Bearer signing certificate (for APIM policy cert lookup)')
+param sfJwtBearerCertThumbprint string = ''
+
+@description('SF service account username for user lookups in OBO flow')
+param sfServiceAccountUsername string = ''
+
+@description('Name of the JWT claim containing the user identity (oid for Azure AD, sub for Okta/PingFed)')
+param identityClaimName string = 'oid'
+
 var baseName = toLower(environmentName)
 var resourceToken = toLower(uniqueString(subscription().id, baseName, location))
 var tags = {
@@ -98,6 +107,8 @@ module cognitive 'modules/cognitive.bicep' = {
     tags: tags
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
     accountSuffix: cognitiveAccountSuffix
+    appInsightsId: monitoring.outputs.appInsightsId
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
   }
 }
 
@@ -189,8 +200,6 @@ module apim 'modules/apim.bicep' = {
     cognitiveEndpoint: cognitive.outputs.openaiEndpoint
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-    keyVaultUri: sfAuthMode == 'obo' ? keyvault.outputs.keyVaultUri : ''
-    sfJwtBearerCertName: sfAuthMode == 'obo' ? sfJwtBearerCertName : ''
   }
 }
 
@@ -221,6 +230,9 @@ module apimSfMcpObo 'modules/apim-sf-mcp-obo.bicep' = if (sfAuthMode == 'obo') {
     tenantId: subscription().tenantId
     sfOboClientId: sfConnectedAppClientId
     sfOboLoginUrl: !empty(sfInstanceUrl) ? sfInstanceUrl : 'https://login.salesforce.com'
+    sfJwtBearerCertThumbprint: sfJwtBearerCertThumbprint
+    sfServiceAccountUsername: sfServiceAccountUsername
+    identityClaimName: identityClaimName
   }
   // Depends on apimSfMcp for the APIMGatewayURL Named Value used by the PRM policy
   dependsOn: [ apimSfMcp ]
@@ -303,6 +315,22 @@ module keyvaultApimAccess 'modules/keyvault.bicep' = if (sfAuthMode == 'obo') {
     tags: tags
     apimPrincipalId: apim.outputs.apimPrincipalId
   }
+}
+
+// ============================================================
+// Tier 4.5: APIM JWT Bearer Certificate (after KV RBAC grant)
+// Must run AFTER keyvaultApimAccess so APIM has "Key Vault Secrets User" role.
+// ============================================================
+
+module apimJwtBearerCert 'modules/apim-jwt-bearer-cert.bicep' = if (sfAuthMode == 'obo') {
+  name: 'apim-jwt-bearer-cert'
+  scope: rg
+  params: {
+    apimName: apim.outputs.apimName
+    keyVaultUri: keyvault.outputs.keyVaultUri
+    sfJwtBearerCertName: sfJwtBearerCertName
+  }
+  dependsOn: [ keyvaultApimAccess ]
 }
 
 // ============================================================
