@@ -1,0 +1,4 @@
+mcp[http]>=1.9.0
+httpx>=0.27.0
+uvicorn[standard]>=0.34.0
+azure-monitor-opentelemetry>=1.6.0

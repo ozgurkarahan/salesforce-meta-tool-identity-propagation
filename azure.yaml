@@ -1,0 +1,22 @@
+name: sf-mcp-tool
+services:
+  chat-app:
+    project: ./src/chat-app
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+  salesforce-mcp:
+    project: ./src/salesforce-mcp
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+hooks:
+  postprovision:
+    shell: sh
+    run: hooks/postprovision.sh
+    continueOnError: true
+    interactive: true

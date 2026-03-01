@@ -1,0 +1,631 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Identity Propagation Dashboard\n\nOperational visibility for the identity propagation PoC — traces, tokens, auth failures, and MCP request patterns."
+      },
+      "name": "header"
+    },
+    {
+      "type": 11,
+      "content": {
+        "version": "LinkItem/1.0",
+        "style": "tabs",
+        "links": [
+          {
+            "id": "tab-traces",
+            "cellValue": "traces",
+            "linkTarget": "parameter",
+            "linkLabel": "Identity Propagation Traces",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-tokens",
+            "cellValue": "tokens",
+            "linkTarget": "parameter",
+            "linkLabel": "Token Metrics",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-auth-failures",
+            "cellValue": "auth-failures",
+            "linkTarget": "parameter",
+            "linkLabel": "Auth Failures",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-mcp",
+            "cellValue": "mcp",
+            "linkTarget": "parameter",
+            "linkLabel": "MCP Request Patterns",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-e2e",
+            "cellValue": "e2e",
+            "linkTarget": "parameter",
+            "linkLabel": "E2E Request Flow",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-container-logs",
+            "cellValue": "container-logs",
+            "linkTarget": "parameter",
+            "linkLabel": "Container App Logs",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-errors",
+            "cellValue": "errors",
+            "linkTarget": "parameter",
+            "linkLabel": "Errors Dashboard",
+            "subTarget": "selectedTab",
+            "style": "link"
+          },
+          {
+            "id": "tab-oauth-audit",
+            "cellValue": "oauth-audit",
+            "linkTarget": "parameter",
+            "linkLabel": "OAuth Audit",
+            "subTarget": "selectedTab",
+            "style": "link"
+          }
+        ]
+      },
+      "name": "tabs"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "time-range",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "isRequired": true,
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 3600000 },
+                { "durationMs": 14400000 },
+                { "durationMs": 43200000 },
+                { "durationMs": 86400000 },
+                { "durationMs": 259200000 },
+                { "durationMs": 604800000 }
+              ],
+              "allowCustom": true
+            },
+            "value": {
+              "durationMs": 86400000
+            }
+          },
+          {
+            "id": "selected-tab",
+            "version": "KqlParameterItem/1.0",
+            "name": "selectedTab",
+            "type": 1,
+            "isRequired": false,
+            "isHiddenWhenLocked": true,
+            "value": "traces"
+          }
+        ],
+        "style": "pills"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Identity Propagation Traces\n\nAPIM gateway logs for the `orders-mcp` API showing caller IP, response code, duration, and correlation."
+            },
+            "name": "traces-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders-mcp'\n| project TimeGenerated, CallerIpAddress, ResponseCode, TotalTime, CorrelationId, Method, Url, BackendMethod, BackendUrl\n| order by TimeGenerated desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "gridSettings": {
+                "sortBy": [
+                  {
+                    "itemKey": "TimeGenerated",
+                    "sortOrder": 2
+                  }
+                ]
+              }
+            },
+            "name": "traces-table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders-mcp'\n| summarize count() by bin(TimeGenerated, 5m), tostring(ResponseCode)\n| render timechart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "timechart",
+              "title": "MCP Requests Over Time by Status Code"
+            },
+            "name": "traces-chart"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "traces"
+      },
+      "name": "traces-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Token Metrics\n\nAI Gateway token usage from APIM gateway logs for the `azure-openai` API — request count and latency over time."
+            },
+            "name": "tokens-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'azure-openai' or ApiId contains 'openai'\n| summarize RequestCount=count(), AvgLatency=avg(TotalTime), P95Latency=percentile(TotalTime, 95) by bin(TimeGenerated, 15m)\n| render timechart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "timechart",
+              "title": "OpenAI API Request Count & Latency"
+            },
+            "name": "tokens-chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'azure-openai' or ApiId contains 'openai'\n| project TimeGenerated, ResponseCode, TotalTime, CallerIpAddress, Method, Url\n| order by TimeGenerated desc\n| take 50",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Recent OpenAI API Requests"
+            },
+            "name": "tokens-table"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "tokens"
+      },
+      "name": "tokens-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Auth Failures\n\n401 responses from the MCP API with WWW-Authenticate header details."
+            },
+            "name": "auth-failures-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders-mcp'\n| where ResponseCode == 401\n| project TimeGenerated, CallerIpAddress, ResponseCode, LastErrorMessage, CorrelationId, Method, Url\n| order by TimeGenerated desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "401 Unauthorized Responses"
+            },
+            "name": "auth-failures-table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders-mcp'\n| where ResponseCode == 401\n| summarize FailureCount=count() by bin(TimeGenerated, 1h)\n| render barchart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "barchart",
+              "title": "Auth Failures Over Time"
+            },
+            "name": "auth-failures-chart"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "auth-failures"
+      },
+      "name": "auth-failures-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## MCP Request Patterns\n\nSuccessful MCP requests over time with count, average, and P95 latency."
+            },
+            "name": "mcp-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders-mcp'\n| where ResponseCode >= 200 and ResponseCode < 300\n| summarize RequestCount=count(), AvgLatency=avg(TotalTime), P95Latency=percentile(TotalTime, 95) by bin(TimeGenerated, 15m)\n| render timechart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "timechart",
+              "title": "Successful MCP Requests — Count & Latency"
+            },
+            "name": "mcp-chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders-mcp'\n| where ResponseCode >= 200 and ResponseCode < 300\n| project TimeGenerated, TotalTime, CallerIpAddress, ResponseCode, CorrelationId, Method, Url\n| order by TimeGenerated desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Recent Successful MCP Requests"
+            },
+            "name": "mcp-table"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "mcp"
+      },
+      "name": "mcp-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## E2E Request Flow\n\nCorrelates App Insights `requests` from chat-app and orders-api (by `cloud_RoleName`) with APIM gateway logs. After SDK instrumentation, traces from both Container Apps appear here alongside APIM requests."
+            },
+            "name": "e2e-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "requests\n| where timestamp {TimeRange}\n| where cloud_RoleName contains 'orders' or cloud_RoleName contains 'chat'\n| project timestamp, cloud_RoleName, name, resultCode, duration, operation_Id, url\n| order by timestamp desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.insights/components",
+              "visualization": "table",
+              "title": "App Insights Requests (Chat App + Orders API)"
+            },
+            "name": "e2e-requests-table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "requests\n| where timestamp {TimeRange}\n| where cloud_RoleName contains 'orders' or cloud_RoleName contains 'chat'\n| summarize RequestCount=count(), AvgDuration=avg(duration) by bin(timestamp, 5m), cloud_RoleName\n| render timechart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.insights/components",
+              "visualization": "timechart",
+              "title": "Request Volume by Service Over Time"
+            },
+            "name": "e2e-volume-chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "let app_requests = requests\n| where timestamp {TimeRange}\n| where cloud_RoleName contains 'orders' or cloud_RoleName contains 'chat'\n| summarize AppCount=count(), AvgAppDuration=avg(duration) by Source='AppInsights', Service=cloud_RoleName;\nlet apim_requests = ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ApiId contains 'orders'\n| summarize APIMCount=count(), AvgAPIMDuration=avg(TotalTime) by Source='APIM', Service=ApiId;\nunion app_requests, apim_requests",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Cross-Layer Request Summary"
+            },
+            "name": "e2e-summary"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "e2e"
+      },
+      "name": "e2e-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Container App Logs\n\nStdout/stderr logs from both Container Apps (`ca-orders-api` and `ca-chat-app`). Use the keyword filter to search for specific log patterns."
+            },
+            "name": "container-logs-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s in ('ca-orders-api', 'ca-chat-app')\n| project TimeGenerated, ContainerAppName_s, Log_s\n| order by TimeGenerated desc\n| take 200",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Recent Container App Logs"
+            },
+            "name": "container-logs-table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s in ('ca-orders-api', 'ca-chat-app')\n| where Log_s contains 'request_start' or Log_s contains 'chat_request' or Log_s contains 'chat_response'\n| project TimeGenerated, ContainerAppName_s, Log_s\n| order by TimeGenerated desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Structured Request Logs (request_start / chat_request / chat_response)"
+            },
+            "name": "container-structured-logs"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "container-logs"
+      },
+      "name": "container-logs-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Errors Dashboard\n\nAggregated errors across all telemetry sources: APIM 4xx/5xx responses, Container App ERROR logs, and Cognitive Services failures."
+            },
+            "name": "errors-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "let apim_errors = ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ResponseCode >= 400\n| summarize Count=count() by Source='APIM', Status=tostring(ResponseCode), Service=ApiId;\nlet container_errors = ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where Log_s contains 'ERROR' or Log_s contains 'Traceback'\n| summarize Count=count() by Source='ContainerApp', Status='ERROR', Service=ContainerAppName_s;\nlet cognitive_errors = AzureDiagnostics\n| where TimeGenerated {TimeRange}\n| where ResourceProvider == 'MICROSOFT.COGNITIVESERVICES'\n| where ResultType == 'Failed' or ResultType == 'Error'\n| summarize Count=count() by Source='Cognitive', Status=ResultType, Service=OperationName;\nunion apim_errors, container_errors, cognitive_errors\n| order by Count desc",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Error Summary by Source"
+            },
+            "name": "errors-summary"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "let apim_errors = ApiManagementGatewayLogs\n| where TimeGenerated {TimeRange}\n| where ResponseCode >= 400\n| extend Source='APIM', ErrorTime=TimeGenerated;\nlet container_errors = ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where Log_s contains 'ERROR' or Log_s contains 'Traceback'\n| extend Source='ContainerApp', ErrorTime=TimeGenerated;\nunion apim_errors, container_errors\n| summarize ErrorCount=count() by bin(ErrorTime, 1h), Source\n| render barchart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "barchart",
+              "title": "Errors Over Time by Source"
+            },
+            "name": "errors-timeline"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s in ('ca-orders-api', 'ca-chat-app')\n| where Log_s contains 'ERROR' or Log_s contains 'Traceback' or Log_s contains 'Exception'\n| project TimeGenerated, ContainerAppName_s, Log_s\n| order by TimeGenerated desc\n| take 50",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Recent Error Details"
+            },
+            "name": "errors-detail"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "errors"
+      },
+      "name": "errors-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## OAuth Audit (Entra ID Sign-in Logs)\n\nShows token issuance events for the PoC's 3 Entra app registrations. This provides visibility into the Foundry/ApiHub OAuth pipeline that is otherwise opaque in APIM and App Insights telemetry.\n\n**Data source requirement:** `SigninLogs` and `AADServicePrincipalSignInLogs` tables require Entra ID sign-in logs to be routed to this Log Analytics workspace via **Entra ID → Diagnostic settings**. If the tables are empty, use the standalone script instead: `python scripts/check-signin-logs.py`\n\n> **Note:** In managed tenants, configuring Entra diagnostic settings requires the **Security Admin** role. If unavailable, the script queries the Graph API directly with `AuditLog.Read.All` delegated permission."
+            },
+            "name": "oauth-audit-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "SigninLogs\n| where TimeGenerated {TimeRange}\n| where AppDisplayName has 'MCP Gateway' or AppDisplayName has 'Foundry OAuth' or AppDisplayName has 'Chat App'\n| project TimeGenerated, UserDisplayName, AppDisplayName, ResourceDisplayName, ResultType, ResultDescription, IPAddress, ConditionalAccessStatus, Location=tostring(LocationDetails.city)\n| order by TimeGenerated desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Interactive Sign-in Events (User Token Issuance)"
+            },
+            "name": "oauth-audit-interactive"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "AADServicePrincipalSignInLogs\n| where TimeGenerated {TimeRange}\n| where ServicePrincipalName has 'MCP Gateway' or ServicePrincipalName has 'Foundry OAuth' or ServicePrincipalName has 'Chat App'\n| project TimeGenerated, ServicePrincipalName, ResourceDisplayName, ResultType, ResultDescription, IPAddress\n| order by TimeGenerated desc\n| take 100",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Service Principal Sign-ins (Background Token Refreshes)"
+            },
+            "name": "oauth-audit-sp"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "SigninLogs\n| where TimeGenerated {TimeRange}\n| where AppDisplayName has 'MCP Gateway' or AppDisplayName has 'Foundry OAuth' or AppDisplayName has 'Chat App'\n| extend Status = iff(ResultType == 0, 'Success', 'Failure')\n| summarize Count=count() by bin(TimeGenerated, 1h), Status\n| render barchart",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "barchart",
+              "title": "Sign-in Success vs Failure Over Time"
+            },
+            "name": "oauth-audit-chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "SigninLogs\n| where TimeGenerated {TimeRange}\n| where AppDisplayName has 'MCP Gateway' or AppDisplayName has 'Foundry OAuth' or AppDisplayName has 'Chat App'\n| where ResultType != 0\n| project TimeGenerated, UserDisplayName, AppDisplayName, ResultType, ResultDescription, ConditionalAccessStatus\n| order by TimeGenerated desc\n| take 50",
+              "size": 0,
+              "timeContext": {
+                "durationMs": 86400000
+              },
+              "queryType": 0,
+              "resourceType": "microsoft.operationalinsights/workspaces",
+              "visualization": "table",
+              "title": "Failed Sign-in Events (Error Details)"
+            },
+            "name": "oauth-audit-failures"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "selectedTab",
+        "comparison": "isEqualTo",
+        "value": "oauth-audit"
+      },
+      "name": "oauth-audit-group"
+    }
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json",
+  "fallbackResourceIds": []
+}

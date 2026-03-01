@@ -1,0 +1,143 @@
+<policies>
+    <inbound>
+        <base />
+        <set-header name="X-Request-ID" exists-action="skip">
+            <value>@(context.RequestId.ToString())</value>
+        </set-header>
+
+        <!-- Step 1: Validate Azure AD token -->
+        <validate-jwt header-name="Authorization"
+            failed-validation-httpcode="401"
+            failed-validation-error-message="Invalid Azure AD token"
+            require-scheme="Bearer"
+            output-token-variable-name="jwt">
+            <openid-config url="https://login.microsoftonline.com/{{TenantId}}/v2.0/.well-known/openid-configuration" />
+            <audiences>
+                <audience>https://ai.azure.com</audience>
+            </audiences>
+        </validate-jwt>
+
+        <!-- Step 2: Extract user identity (oid = immutable Azure AD object ID) -->
+        <set-variable name="aadOid" value="@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", ""))" />
+        <set-variable name="aadUpn" value="@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("preferred_username", ""))" />
+
+        <!-- Step 3: Map Azure AD oid to SF username via FederationIdentifier.
+             The JWT Bearer sub claim is matched against the user's FederationIdentifier in SF.
+             Each SF user must have FederationIdentifier = Azure AD oid. -->
+        <set-variable name="sfUsername" value="@((string)context.Variables["aadOid"])" />
+
+        <!-- Step 4: Cache lookup — key is the Azure AD oid -->
+        <cache-lookup-value key="@("sf-token-" + (string)context.Variables["sfUsername"])" variable-name="cachedSfToken" />
+
+        <choose>
+            <when condition="@(!context.Variables.ContainsKey("cachedSfToken") || string.IsNullOrEmpty((string)context.Variables["cachedSfToken"]))">
+                <!-- Step 5: Create JWT Bearer assertion -->
+                <set-variable name="jwtHeader" value="@{
+                    return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new {
+                        alg = "RS256",
+                        typ = "JWT"
+                    }))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                }" />
+                <set-variable name="jwtPayload" value="@{
+                    var now = DateTimeOffset.UtcNow;
+                    var payload = new {
+                        iss = "{{SfOboClientId}}",
+                        sub = (string)context.Variables["sfUsername"],
+                        aud = "{{SfOboLoginUrl}}",
+                        exp = now.AddSeconds(180).ToUnixTimeSeconds()
+                    };
+                    return Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(payload))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                }" />
+                <set-variable name="jwtAssertion" value="@{
+                    var header = (string)context.Variables["jwtHeader"];
+                    var payload = (string)context.Variables["jwtPayload"];
+                    var signingInput = header + "." + payload;
+                    var cert = context.Deployment.Certificates["sf-jwt-bearer"];
+                    using (var rsa = cert.GetRSAPrivateKey()) {
+                        var signature = rsa.SignData(Encoding.UTF8.GetBytes(signingInput), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                        return signingInput + "." + Convert.ToBase64String(signature).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                    }
+                }" />
+
+                <!-- Step 6: Exchange at SF token endpoint -->
+                <send-request mode="new" response-variable-name="sfTokenResponse" timeout="30">
+                    <set-url>{{SfOboLoginUrl}}/services/oauth2/token</set-url>
+                    <set-method>POST</set-method>
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/x-www-form-urlencoded</value>
+                    </set-header>
+                    <set-body>@("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=" + (string)context.Variables["jwtAssertion"])</set-body>
+                </send-request>
+
+                <!-- Parse SF token response -->
+                <choose>
+                    <when condition="@(((IResponse)context.Variables["sfTokenResponse"]).StatusCode == 200)">
+                        <set-variable name="sfAccessToken" value="@{
+                            var body = ((IResponse)context.Variables["sfTokenResponse"]).Body.As<JObject>();
+                            return (string)body["access_token"];
+                        }" />
+                        <!-- Cache SF token for 30 minutes (well under SF's ~2h expiry) -->
+                        <cache-store-value key="@("sf-token-" + (string)context.Variables["sfUsername"])" value="@((string)context.Variables["sfAccessToken"])" duration="1800" />
+                    </when>
+                    <otherwise>
+                        <return-response>
+                            <set-status code="502" reason="SF Token Exchange Failed" />
+                            <set-header name="Content-Type" exists-action="override">
+                                <value>application/json</value>
+                            </set-header>
+                            <set-body>@{
+                                var status = ((IResponse)context.Variables["sfTokenResponse"]).StatusCode;
+                                var body = ((IResponse)context.Variables["sfTokenResponse"]).Body.As<string>();
+                                return JsonConvert.SerializeObject(new {
+                                    error = "sf_token_exchange_failed",
+                                    message = "Failed to exchange Azure AD token for Salesforce token via JWT Bearer flow",
+                                    sf_status = status,
+                                    sf_error = body,
+                                    aad_oid = (string)context.Variables["aadOid"],
+                                    aad_upn = (string)context.Variables["aadUpn"]
+                                });
+                            }</set-body>
+                        </return-response>
+                    </otherwise>
+                </choose>
+            </when>
+            <otherwise>
+                <!-- Cache hit — use cached SF token -->
+                <set-variable name="sfAccessToken" value="@((string)context.Variables["cachedSfToken"])" />
+            </otherwise>
+        </choose>
+
+        <!-- Step 7: Replace Authorization header with SF Bearer token -->
+        <set-header name="Authorization" exists-action="override">
+            <value>@("Bearer " + (string)context.Variables["sfAccessToken"])</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+        <choose>
+            <when condition="@(context.Response != null && context.Response.StatusCode == 401)">
+                <!-- SF token expired or invalid — evict cache and return 401 -->
+                <cache-remove-value key="@("sf-token-" + (string)context.Variables["sfUsername"])" />
+                <return-response>
+                    <set-status code="401" reason="Unauthorized" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>@{
+                        return JsonConvert.SerializeObject(new {
+                            error = "sf_token_expired",
+                            message = "Salesforce token expired or revoked. Retrying will re-exchange automatically.",
+                            aad_upn = (string)context.Variables["aadUpn"]
+                        });
+                    }</set-body>
+                </return-response>
+            </when>
+        </choose>
+    </on-error>
+</policies>

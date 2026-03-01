@@ -1,0 +1,6 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+azure-ai-projects>=2.0.0b3
+azure-identity>=1.17.0
+openai>=1.60.0
+azure-monitor-opentelemetry>=1.6.0

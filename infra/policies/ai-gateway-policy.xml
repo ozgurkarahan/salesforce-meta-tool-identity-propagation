@@ -1,0 +1,25 @@
+<policies>
+  <inbound>
+    <base />
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    <azure-openai-token-limit counter-key="@(context.Request.IpAddress)"
+      tokens-per-minute="10000" estimate-prompt-tokens="true"
+      remaining-tokens-header-name="x-ratelimit-remaining-tokens" />
+    <llm-emit-token-metric>
+      <dimension name="API ID" />
+      <dimension name="Operation ID" />
+      <dimension name="Client IP" value="@(context.Request.IpAddress)" />
+      <dimension name="Deployment" value="@(context.Request.MatchedParameters[&quot;deployment-id&quot;])" />
+    </llm-emit-token-metric>
+    <set-backend-service backend-id="openai-backend" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
