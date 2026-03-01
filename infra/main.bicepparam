@@ -6,3 +6,5 @@ param cognitiveAccountSuffix = readEnvironmentVariable('COGNITIVE_ACCOUNT_SUFFIX
 param sfInstanceUrl = readEnvironmentVariable('SF_INSTANCE_URL', '')
 param sfConnectedAppClientId = readEnvironmentVariable('SF_CONNECTED_APP_CLIENT_ID', 'placeholder-updated-by-hook')
 param sfConnectedAppClientSecret = readEnvironmentVariable('SF_CONNECTED_APP_CLIENT_SECRET', '')
+param sfAuthMode = readEnvironmentVariable('SF_AUTH_MODE', 'oauth2')
+param sfJwtBearerCertName = readEnvironmentVariable('SF_JWT_BEARER_CERT_NAME', 'sf-jwt-bearer')
