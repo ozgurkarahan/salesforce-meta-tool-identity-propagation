@@ -73,7 +73,7 @@ azd env set SF_AUTH_MODE obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
 azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
-azd env set SF_SERVICE_ACCOUNT_USERNAME "<admin@your-org.my.salesforce.com>"
+azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 azd up
 ```
 
@@ -96,7 +96,7 @@ azd up
 | `SF_CONNECTED_APP_CLIENT_SECRET` | Required | Not needed | Connected App consumer secret |
 | `SF_JWT_BEARER_CERT_THUMBPRINT` | — | Required | Certificate thumbprint for APIM policy |
 | `SF_JWT_BEARER_CERT_NAME` | — | `sf-jwt-bearer` | Key Vault certificate name |
-| `SF_SERVICE_ACCOUNT_USERNAME` | — | Required | SF admin username for SOQL lookups |
+| `SF_SERVICE_ACCOUNT_USERNAME` | — | Required | SF service account username for SOQL lookups (any profile; needs `MCP_OBO_Service_Account` Permission Set) |
 | `IDENTITY_CLAIM_NAME` | — | `oid` (default) | JWT claim for user identity (change for non-Azure IdPs) |
 
 ### Key Paths
@@ -122,14 +122,16 @@ azd up
 - `scripts/set-sf-federation-id.py` — Set FederationIdentifier on SF users
 - `scripts/setup-sf-org.py` — Consolidated SF org setup orchestrator
 - `scripts/setup-sf-demo-user.py` — Demo user + custom profile + test data
+- `scripts/setup-sf-service-account.py` — Dedicated OBO service account (Minimum Access profile + Permission Set)
 
 ### OBO Prerequisites (Salesforce side)
 1. Create Connected App with JWT Bearer flow enabled (`scripts/setup-sf-obo-eca.py`)
 2. Upload X.509 certificate (public key) to the Connected App (UI-only for PKCE; metadata for cert)
 3. Set OAuth Policies → "Admin approved users are pre-authorized" (via SetupEntityAccess API)
 4. Assign profiles for allowed users
-5. Set FederationIdentifier on each SF user = their Azure AD `oid` (`scripts/set-sf-federation-id.py`)
-6. Import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bearer`
+5. Create dedicated service account (`scripts/setup-sf-service-account.py`) — creates user with Minimum Access profile, assigns `MCP_OBO_Service_Account` Permission Set (ApiEnabled + ViewAllUsers), pre-authorizes for Connected App
+6. Set FederationIdentifier on each SF user = their Azure AD `oid` (`scripts/set-sf-federation-id.py`)
+7. Import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bearer`
 
 ### OBO Prerequisites (Azure side)
 1. Key Vault with PFX certificate uploaded
@@ -153,7 +155,7 @@ The `IdentityClaimName` Named Value (default: `oid`) controls which JWT claim is
 | Symptom | Cause | Fix |
 |---|---|---|
 | 401 "Invalid Azure AD token" | Token issuer/audience mismatch | Check `validate-jwt` issuers include both v1 and v2 |
-| 502 "SF Service Token Failed" | Bad cert, wrong client ID, or service account not pre-authorized | Verify cert thumbprint, client ID, and profile assignment |
+| 502 "SF Service Token Failed" | Bad cert, wrong client ID, or service account not pre-authorized | Verify cert thumbprint, client ID, and `MCP_OBO_Service_Account` Permission Set assignment |
 | 403 "User Not Mapped" | No SF user with matching FederationIdentifier | Run `set-sf-federation-id.py` for the user |
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for the Connected App | Assign user's profile to the Connected App via SetupEntityAccess |
 | 500 (KeyNotFoundException) | Certificate thumbprint wrong or missing Named Value | Verify `SF_JWT_BEARER_CERT_THUMBPRINT` matches actual cert |

@@ -2,10 +2,11 @@
 
 Orchestrates all SF setup phases in sequence after `sf org login web`:
 
-  Step 1/4: SSO Federation        -- Entra App + Auth Provider + Apex handler
-  Step 2/4: External Client App   -- ECA metadata + OAuth settings deployment
-  Step 3/4: ECA Callback URL      -- Add ApiHub redirect URI to ECA's OAuth callbacks
-  Step 4/4: Demo User + Test Data -- Custom profile (no Account delete) + user + sample data
+  Step 1/5: SSO Federation        -- Entra App + Auth Provider + Apex handler
+  Step 2/5: External Client App   -- ECA metadata + OAuth settings deployment
+  Step 3/5: ECA Callback URL      -- Add ApiHub redirect URI to ECA's OAuth callbacks
+  Step 4/5: Demo User + Test Data -- Custom profile (no Account delete) + user + sample data
+  Step 5/5: OBO Service Account   -- Dedicated service user for JWT Bearer flow
 
 Each step calls an existing standalone script via subprocess with pass-through
 stdin/stdout, so interactive steps (SSO browser login) work correctly.
@@ -18,7 +19,7 @@ Prerequisites:
 Usage:
     python scripts/setup-sf-org.py --org <alias> --email <admin-email>
     python scripts/setup-sf-org.py --org <alias> --email <admin-email> --skip sso callback
-    python scripts/setup-sf-org.py --org <alias> --email <admin-email> --only eca demo
+    python scripts/setup-sf-org.py --org <alias> --email <admin-email> --only eca demo svcacct
 """
 
 import argparse
@@ -38,12 +39,14 @@ SSO_SCRIPT = os.path.join(REPO_ROOT, ".claude", "scripts", "setup-salesforce-sso
 ECA_SCRIPT = os.path.join(SCRIPT_DIR, "setup-sf-external-client-app.py")
 CALLBACK_SCRIPT = os.path.join(SCRIPT_DIR, "configure-sf-connected-app.py")
 DEMO_USER_SCRIPT = os.path.join(SCRIPT_DIR, "setup-sf-demo-user.py")
+SVC_ACCOUNT_SCRIPT = os.path.join(SCRIPT_DIR, "setup-sf-service-account.py")
 
 STEPS = [
     ("sso", "SSO Federation"),
     ("eca", "External Client App"),
     ("callback", "ECA Callback URL Config"),
     ("demo", "Demo User + Test Data"),
+    ("svcacct", "OBO Service Account"),
 ]
 STEP_KEYS = [s[0] for s in STEPS]
 
@@ -97,7 +100,7 @@ def check_prerequisites(org: str):
 def main():
     parser = argparse.ArgumentParser(
         description="Consolidated Salesforce org setup after Dev Trial creation. "
-        "Chains all setup phases: SSO -> ECA -> Callback URL -> Demo User."
+        "Chains all setup phases: SSO -> ECA -> Callback URL -> Demo User -> OBO Service Account."
     )
     parser.add_argument(
         "--org", required=True,
@@ -210,6 +213,20 @@ def main():
             f"--org {args.org} --email {args.email}",
         )
         results["demo"] = "OK" if ok else "FAILED"
+        if not ok and not args.continue_on_error:
+            print("\n  Stopping (use --continue-on-error to proceed past failures)")
+            _print_summary(results, steps_to_run, start_time)
+            sys.exit(1)
+
+    # Step 5: OBO Service Account
+    if "svcacct" in steps_to_run:
+        step_num += 1
+        ok = run_step(
+            step_num, total, "OBO Service Account",
+            f'python "{SVC_ACCOUNT_SCRIPT}" '
+            f"--org {args.org} --email {args.email}",
+        )
+        results["svcacct"] = "OK" if ok else "FAILED"
 
     _print_summary(results, steps_to_run, start_time)
 

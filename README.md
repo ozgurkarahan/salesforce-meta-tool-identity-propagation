@@ -61,12 +61,12 @@ azd env set SF_AUTH_MODE obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
 azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
-azd env set SF_SERVICE_ACCOUNT_USERNAME "<admin@your-org.my.salesforce.com>"
+azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 
 azd up
 ```
 
-> **Salesforce prerequisites:** Connected App with JWT Bearer flow enabled, certificate uploaded, FederationIdentifier set on each user. See [Setting Up Salesforce: On-Behalf-Of (OBO) Mode](#obo-mode-jwt-bearer) below.
+> **Salesforce prerequisites:** Connected App with JWT Bearer flow enabled, certificate uploaded, service account with `MCP_OBO_Service_Account` Permission Set, FederationIdentifier set on each user. See [Setting Up Salesforce: On-Behalf-Of (OBO) Mode](#obo-mode-jwt-bearer) below.
 
 ### OAuth2 Mode (Alternative)
 
@@ -310,6 +310,7 @@ salesforce-meta-tool-identity-propagation/
 | `setup-sf-external-client-app.py` | Creates External Client App + OAuth settings (OAuth2 mode) |
 | `configure-sf-connected-app.py` | Adds ApiHub redirect URI to SF Connected App callback URLs |
 | `setup-sf-demo-user.py` | Creates demo user + custom profile (no Account delete) + test data |
+| `setup-sf-service-account.py` | Creates dedicated OBO service account (Minimum Access profile + Permission Set) |
 | `grant-sf-mcp-consent.py` | Direct OAuth consent flow, bypasses ApiHub for headless setups |
 | `test-salesforce-mcp.py` | 11-step end-to-end Salesforce MCP server validation |
 | `test-agent-oauth.py` | Interactive multi-turn agent test with OAuth consent + MCP |
@@ -326,7 +327,7 @@ salesforce-meta-tool-identity-propagation/
 | `SF_CONNECTED_APP_CLIENT_SECRET` | Required | — | Consumer Secret (OAuth2 mode only) |
 | `SF_JWT_BEARER_CERT_THUMBPRINT` | — | Required | Certificate thumbprint for JWT Bearer signing |
 | `SF_JWT_BEARER_CERT_NAME` | — | `sf-jwt-bearer` | Key Vault certificate name (default: `sf-jwt-bearer`) |
-| `SF_SERVICE_ACCOUNT_USERNAME` | — | Required | SF admin username for SOQL user lookups |
+| `SF_SERVICE_ACCOUNT_USERNAME` | — | Required | SF service account username for SOQL user lookups |
 | `IDENTITY_CLAIM_NAME` | — | `oid` (default) | Azure AD JWT claim for user identity |
 | `COGNITIVE_ACCOUNT_SUFFIX` | Optional | Optional | Increment after `azd down --purge` to avoid naming conflicts |
 | `AZURE_LOCATION` | Optional | Optional | Azure region (default: `swedencentral`) |
@@ -360,13 +361,19 @@ On-Behalf-Of (OBO) mode requires additional Salesforce configuration: a Connecte
 
 1. **Create a Connected App** with JWT Bearer flow enabled:
    ```bash
-   python scripts/setup-sf-obo-eca.py
+   python scripts/setup-sf-obo-eca.py --org <alias> --email <your-email> --cert certs/sf-jwt-bearer.crt
    ```
-   This creates the Connected App via Metadata API, uploads the certificate, and sets OAuth policies to "Admin approved users are pre-authorized."
+   This creates the Connected App via Metadata API, uploads the certificate, sets OAuth policies to "Admin approved users are pre-authorized", and creates a Permission Set (`MCP_OBO_Service_Account`) with minimal permissions (API Enabled + View All Users).
 
-2. **Assign profiles.** Add the profiles of allowed users to the Connected App (via SetupEntityAccess API, handled by the script above).
+2. **Create a dedicated service account** for SOQL user lookups:
+   ```bash
+   python scripts/setup-sf-service-account.py --org <alias> --email <your-email>
+   ```
+   This creates a user with the most restrictive profile (`Minimum Access - Salesforce`), assigns the `MCP_OBO_Service_Account` Permission Set, and pre-authorizes it for the Connected App. The service account does not need System Administrator — the Permission Set provides the required permissions.
 
-3. **Map users.** Set `FederationIdentifier` on each SF user to their Azure AD `oid`:
+3. **Assign profiles.** Add the profiles of allowed users to the Connected App (via SetupEntityAccess API, handled by the setup-sf-obo-eca.py script).
+
+4. **Map users.** Set `FederationIdentifier` on each SF user to their Azure AD `oid`:
    ```bash
    python scripts/set-sf-federation-id.py
    ```
@@ -415,7 +422,7 @@ azd up
 | Problem | Solution |
 |---------|----------|
 | 401 "Invalid Azure AD token" | Token issuer/audience mismatch. Check `validate-jwt` issuers include both v1 and v2 |
-| 502 "SF Service Token Failed" | Bad certificate, wrong client ID, or service account not pre-authorized for the Connected App |
+| 502 "SF Service Token Failed" | Bad certificate, wrong client ID, or service account not pre-authorized. Verify `MCP_OBO_Service_Account` Permission Set is assigned |
 | 403 "User Not Mapped" | No SF user with matching FederationIdentifier. Run `set-sf-federation-id.py` |
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized. Assign user's profile to the Connected App |
 | 500 (KeyNotFoundException) | Certificate thumbprint wrong or Named Value missing. Verify `SF_JWT_BEARER_CERT_THUMBPRINT` |
