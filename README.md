@@ -48,16 +48,13 @@ The server is a thin metadata-driven bridge: the agent calls `describe_object("A
 | Docker Desktop | — | [docker.com](https://www.docker.com/products/docker-desktop/) |
 | Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
 
-### On-Behalf-Of (JWT Bearer)
-
-Single sign-on: user authenticates to Azure AD, APIM exchanges for a Salesforce token server-side.
+Single sign-on: user authenticates to Azure AD, APIM exchanges for a Salesforce token server-side via JWT Bearer.
 
 ```bash
 git clone https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation.git
 cd salesforce-meta-tool-identity-propagation
 
 azd env new obo
-azd env set SF_AUTH_MODE obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
 azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
@@ -66,31 +63,11 @@ azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 azd up
 ```
 
-> **Salesforce prerequisites:** Connected App with JWT Bearer flow enabled, certificate uploaded, service account with `MCP_OBO_Service_Account` Permission Set, FederationIdentifier set on each user. See [Setting Up Salesforce: On-Behalf-Of (OBO) Mode](#obo-mode-jwt-bearer) below.
-
-### OAuth2 Mode (Alternative)
-
-Dual sign-on: user authenticates to Azure AD *and* to Salesforce via OAuth2/PKCE consent.
-
-```bash
-git clone https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation.git
-cd salesforce-meta-tool-identity-propagation
-
-azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
-azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
-azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
-
-azd up
-```
-
-After deployment, run `python scripts/configure-sf-connected-app.py` to register the callback URL, then open the Chat App. The agent triggers OAuth consent on first use.
+> **Salesforce prerequisites:** Connected App with JWT Bearer flow enabled, certificate uploaded, service account with `MCP_OBO_Service_Account` Permission Set, FederationIdentifier set on each user. See [Setting Up Salesforce](#setting-up-salesforce) below.
 
 ### First Use
 
-After `azd up` completes, open the Chat App at the URL printed at the end of deployment. Sign in with your Azure AD account and send a message (e.g., *"Show me my Salesforce accounts"*).
-
-- **On-Behalf-Of (OBO) mode:** Works immediately, no Salesforce consent required.
-- **OAuth2 mode:** The agent triggers a one-time Salesforce OAuth consent flow. Click the consent link, authenticate with Salesforce, and the agent retries automatically.
+After `azd up` completes, open the Chat App at the URL printed at the end of deployment. Sign in with your Azure AD account and send a message (e.g., *"Show me my Salesforce accounts"*). OBO mode works immediately — no Salesforce consent required.
 
 ---
 
@@ -184,27 +161,7 @@ For production use, treat destructive operations with the same care you'd apply 
 
 ---
 
-## Two Auth Modes
-
-This project supports two authentication modes, controlled by the `SF_AUTH_MODE` environment variable.
-
-| | On-Behalf-Of (OBO) / JWT Bearer | OAuth2 / PKCE |
-|---|---|---|
-| `SF_AUTH_MODE` | `obo` | `oauth2` (default) |
-| User experience | Single sign-on (Azure AD only) | Dual sign-on (Azure AD + Salesforce consent) |
-| Token exchange | APIM exchanges Azure AD token for SF token server-side | User authenticates directly to Salesforce via ApiHub |
-| Salesforce setup | Connected App with JWT Bearer + certificate + FederationIdentifier mapping | Connected App with OAuth2/PKCE |
-| Admin pre-authorization | Required: admin assigns profiles | Not required: user self-authorizes via consent |
-| Token management | APIM caches tokens (30 min), auto-evicts on 401 | ApiHub manages token lifecycle |
-| Best for | Enterprise: centralized control, no user-facing SF login | Quick start: simpler setup, user manages their own SF auth |
-
-**Both modes enforce per-user identity.** The MCP server and Salesforce API always see the individual user's permissions, never a service account.
-
----
-
 ## Architecture
-
-### On-Behalf-Of (OBO) Mode
 
 ```
 User (browser)
@@ -241,26 +198,7 @@ User (browser)
 
 **Warm user overhead: ~0ms.** All three phases hit cache.
 
-### OAuth2 Mode
-
-```
-Browser ──[MSAL.js]──► Chat App ──► AI Foundry Agent
-                                          │
-                                    [MCP tool call]
-                                          │
-                                          ▼
-                                    ApiHub (SF PKCE consent)
-                                          │
-                                          ▼
-                                    APIM (validate SF JWT)
-                                          │
-                                          ▼
-                                    SF MCP Server ──► Salesforce API
-```
-
-The user authenticates to Salesforce directly via OAuth2/PKCE. ApiHub manages the token lifecycle. APIM validates the Salesforce JWT using OIDC discovery against the org's instance URL.
-
-The MCP server is **stateless** in both modes. It never stores, caches, or refreshes tokens.
+The MCP server is **stateless**. It never stores, caches, or refreshes tokens.
 
 ---
 
@@ -281,83 +219,54 @@ salesforce-meta-tool-identity-propagation/
 │   ├── main.bicepparam           # Environment variable → Bicep param mapping
 │   ├── modules/
 │   │   ├── apim.bicep            # APIM Gateway
-│   │   ├── apim-sf-mcp.bicep     # OAuth2 mode APIM API
-│   │   ├── apim-sf-mcp-obo.bicep # On-Behalf-Of (OBO) mode APIM API + Named Values
+│   │   ├── apim-sf-mcp-obo.bicep # OBO APIM API + Named Values
 │   │   ├── apim-jwt-bearer-cert.bicep  # Key Vault → APIM certificate binding
-│   │   ├── sf-oauth-connection.bicep   # Foundry OAuth connection (OAuth2 mode)
-│   │   ├── sf-obo-connection.bicep     # Foundry UserEntraToken connection (On-Behalf-Of (OBO) mode)
+│   │   ├── sf-obo-connection.bicep     # Foundry UserEntraToken connection
 │   │   ├── keyvault.bicep        # Key Vault + APIM RBAC access
 │   │   ├── cognitive.bicep       # AI Services, project, App Insights
 │   │   └── ...                   # Container Apps, registry, monitoring, storage
 │   └── policies/
-│       ├── sf-mcp-obo-policy.xml     # On-Behalf-Of (OBO) three-phase exchange policy
-│       ├── sf-mcp-obo-prm-policy.xml # RFC 9728 PRM for On-Behalf-Of (OBO) endpoint
-│       ├── sf-mcp-api-policy.xml     # OAuth2 mode SF JWT validation
-│       └── sf-mcp-prm-policy.xml     # RFC 9728 PRM for OAuth2 endpoint
+│       ├── sf-mcp-obo-policy.xml     # OBO three-phase exchange policy
+│       └── sf-mcp-obo-prm-policy.xml # RFC 9728 PRM for OBO endpoint
 ├── hooks/
-│   └── postprovision.py          # Creates Entra app + Foundry agent + connections (auth-mode-aware)
-├── scripts/                      # Setup, consent, and test scripts
-└── docs/                         # Reauth flow documentation + diagrams
+│   └── postprovision.py          # Creates Entra app + Foundry agent + OBO connection
+├── scripts/                      # Setup and test scripts
+└── docs/                         # Architecture diagrams
 ```
 
 ### Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `setup-sf-org.py` | Consolidated SF org setup orchestrator: chains SSO, ECA, callback, demo user |
+| `setup-sf-org.py` | Consolidated SF org setup orchestrator: chains SSO, demo user, OBO service account |
 | `setup-sf-obo-eca.py` | Creates SF Connected App for JWT Bearer via Metadata API |
 | `set-sf-federation-id.py` | Sets FederationIdentifier on SF users (Azure AD `oid` → SF user) |
-| `setup-sf-external-client-app.py` | Creates External Client App + OAuth settings (OAuth2 mode) |
-| `configure-sf-connected-app.py` | Adds ApiHub redirect URI to SF Connected App callback URLs |
 | `setup-sf-demo-user.py` | Creates demo user + custom profile (no Account delete) + test data |
 | `setup-sf-service-account.py` | Creates dedicated OBO service account (Minimum Access profile + Permission Set) |
-| `grant-sf-mcp-consent.py` | Direct OAuth consent flow, bypasses ApiHub for headless setups |
 | `test-salesforce-mcp.py` | 11-step end-to-end Salesforce MCP server validation |
-| `test-agent-oauth.py` | Interactive multi-turn agent test with OAuth consent + MCP |
 
 ---
 
 ## Environment Variables
 
-| Variable | OAuth2 | On-Behalf-Of (OBO) | Description |
-|----------|--------|-----|-------------|
-| `SF_AUTH_MODE` | `oauth2` (default) | `obo` | Auth flow selection |
-| `SF_INSTANCE_URL` | Required | Required | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
-| `SF_CONNECTED_APP_CLIENT_ID` | Required | Required | Consumer Key from the Salesforce Connected App |
-| `SF_CONNECTED_APP_CLIENT_SECRET` | Required | — | Consumer Secret (OAuth2 mode only) |
-| `SF_JWT_BEARER_CERT_THUMBPRINT` | — | Required | Certificate thumbprint for JWT Bearer signing |
-| `SF_JWT_BEARER_CERT_NAME` | — | `sf-jwt-bearer` | Key Vault certificate name (default: `sf-jwt-bearer`) |
-| `SF_SERVICE_ACCOUNT_USERNAME` | — | Required | SF service account username for SOQL user lookups |
-| `IDENTITY_CLAIM_NAME` | — | `oid` (default) | Azure AD JWT claim for user identity |
-| `COGNITIVE_ACCOUNT_SUFFIX` | Optional | Optional | Increment after `azd down --purge` to avoid naming conflicts |
-| `AZURE_LOCATION` | Optional | Optional | Azure region (default: `swedencentral`) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SF_INSTANCE_URL` | Yes | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
+| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
+| `SF_JWT_BEARER_CERT_THUMBPRINT` | Yes | Certificate thumbprint for JWT Bearer signing |
+| `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL user lookups |
+| `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
+| `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
+| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid naming conflicts |
+| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`) |
 
 ---
 
 ## Setting Up Salesforce
 
-### OAuth2 Mode (PKCE)
+The OBO flow requires a Connected App with JWT Bearer flow, a certificate, and user-to-identity mapping.
 
-1. Sign up at [developer.salesforce.com/signup](https://developer.salesforce.com/signup) if you need a new org
-2. Create an External Client App in Salesforce Setup:
-   - Navigate to **Setup → App Manager → New Connected App**
-   - Enable **OAuth Settings**, add scopes: `api`, `refresh_token`
-   - Leave the Callback URL empty for now (the configure script adds it)
-   - Save, then copy the **Consumer Key** and **Consumer Secret**
-3. Set credentials and deploy:
-   ```bash
-   azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
-   azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
-   azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
-   azd up
-   ```
-4. Run `python scripts/configure-sf-connected-app.py` to add the callback URL
-
-### On-Behalf-Of (OBO) Mode (JWT Bearer)
-
-On-Behalf-Of (OBO) mode requires additional Salesforce configuration: a Connected App with JWT Bearer flow, a certificate, and user-to-identity mapping.
-
-#### Salesforce Side
+### Salesforce Side
 
 1. **Create a Connected App** with JWT Bearer flow enabled:
    ```bash
@@ -381,7 +290,7 @@ On-Behalf-Of (OBO) mode requires additional Salesforce configuration: a Connecte
 
 > **Why `oid` and not `sub`?** The `sub` claim is pairwise: it changes per app registration. `oid` is the same across all apps in the tenant, making it a stable identity anchor.
 
-#### Azure Side
+### Azure Side
 
 1. **Upload the certificate** (PFX with private key) to Azure Key Vault as `sf-jwt-bearer`
 2. **APIM managed identity** must have "Key Vault Secrets User" RBAC role on the Key Vault (deployed automatically by Bicep)
@@ -390,10 +299,9 @@ On-Behalf-Of (OBO) mode requires additional Salesforce configuration: a Connecte
    azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<thumbprint>"
    ```
 
-#### Deploy
+### Deploy
 
 ```bash
-azd env set SF_AUTH_MODE obo
 azd up
 ```
 
@@ -401,26 +309,11 @@ azd up
 
 ## Troubleshooting
 
-### Common (Both Modes)
-
 | Problem | Solution |
 |---------|----------|
 | "Project not found" after `azd down` | Increment `COGNITIVE_ACCOUNT_SUFFIX` (e.g., `azd env set COGNITIVE_ACCOUNT_SUFFIX "2"`) and redeploy |
 | APIM breaks MCP streaming | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
-| Agent responds without calling tools | OAuth consent didn't complete (OAuth2 mode) or connection misconfigured |
-| `configure-sf-connected-app.py` fails | Ensure `azd up` has run and Salesforce credentials are set |
-
-### OAuth2 Mode
-
-| Problem | Solution |
-|---------|----------|
-| APIM returns 401 Unauthorized | Salesforce token expired (2h TTL). Click **Re-authenticate** in the Chat App |
-| `validate-jwt` issuer mismatch | Use your org-specific instance URL, not `login.salesforce.com` |
-
-### On-Behalf-Of (OBO) Mode
-
-| Problem | Solution |
-|---------|----------|
+| Agent responds without calling tools | Connection misconfigured — check Foundry connection target URL |
 | 401 "Invalid Azure AD token" | Token issuer/audience mismatch. Check `validate-jwt` issuers include both v1 and v2 |
 | 502 "SF Service Token Failed" | Bad certificate, wrong client ID, or service account not pre-authorized. Verify `MCP_OBO_Service_Account` Permission Set is assigned |
 | 403 "User Not Mapped" | No SF user with matching FederationIdentifier. Run `set-sf-federation-id.py` |
@@ -450,8 +343,8 @@ The MCP server and Salesforce Connected App configuration remain unchanged. Only
 This project is a proof of concept. Before using in production, consider:
 
 - **Destructive operations**: There are no confirmation prompts or audit logs on `write_record` delete operations. Add guardrails appropriate to your org's governance requirements.
-- **Token expiry mid-workflow**: In On-Behalf-Of (OBO) mode, APIM caches tokens for 30 minutes and auto-evicts on 401. In OAuth2 mode, Salesforce tokens have a 2-hour TTL and require re-authentication.
-- **Certificate rotation**: On-Behalf-Of (OBO) mode uses a Key Vault certificate for JWT Bearer signing. Plan for rotation before the certificate expires (default: 365 days).
+- **Token expiry mid-workflow**: APIM caches tokens for 30 minutes and auto-evicts on 401. Long-running workflows may need to retry.
+- **Certificate rotation**: The Key Vault certificate used for JWT Bearer signing has a default expiry of 365 days. Plan for rotation.
 - **Azure-specific infrastructure**: The deployment stack (APIM, AI Foundry, Container Apps) is Azure-native. Adapting this pattern to other clouds or self-hosted models requires replacing the infrastructure layer, though the [IdP flexibility](#idp-flexibility) section shows the authentication layer is modular.
 - **Rate limits**: The Salesforce REST API has per-org API call limits. High-frequency agentic workflows should account for this.
 

@@ -4,13 +4,12 @@ This file provides guidance to code agents when working with this repository.
 
 ## Project Overview
 
-**Salesforce MCP OBO** — fork of `meta-tool-salesforce` with **On-Behalf-Of (JWT Bearer) identity propagation**. User authenticates once to Azure AD; APIM exchanges the Azure AD token for a Salesforce token server-side via JWT Bearer flow. No Salesforce consent required. No dual auth. True OBO.
+**Salesforce MCP OBO** — On-Behalf-Of (JWT Bearer) identity propagation for Salesforce MCP. User authenticates once to Azure AD; APIM exchanges the Azure AD token for a Salesforce token server-side via JWT Bearer flow. No Salesforce consent required. True OBO.
 
 **Status:** OBO flow is **verified end-to-end** (2026-03-01). SF Login History confirms per-user identity propagation.
 
 ## Architecture
 
-### OBO Mode (primary)
 ```
 User → Chat App (MSAL.js) → AI Foundry Agent
   → Foundry acquires Azure AD token (UserEntraToken connection)
@@ -20,19 +19,6 @@ User → Chat App (MSAL.js) → AI Foundry Agent
   → APIM Phase 3: forwards SF token to MCP Server
   → Salesforce MCP Server (FastMCP) → Salesforce APIs
 ```
-
-### OAuth2 Mode (preserved, original)
-```
-User → Chat App → AI Foundry Agent → ApiHub (SF PKCE consent)
-  → APIM (validates SF JWT) → MCP Server → Salesforce APIs
-```
-
-## Auth Modes
-
-| Mode | `SF_AUTH_MODE` | User Auth | Token Exchange | Status |
-|------|---------------|-----------|----------------|--------|
-| OAuth2/PKCE | `oauth2` (default) | Azure AD + SF consent | ApiHub manages SF tokens | Working (inherited) |
-| OBO/JWT Bearer | `obo` | Azure AD only | APIM exchanges via JWT Bearer | **Verified** |
 
 ## OBO Flow — How It Works
 
@@ -66,10 +52,9 @@ The `salesforce-obo` connection stores **no credentials**. It's a configuration 
 
 ## Development Quick Reference
 
-### Deploy (OBO mode)
+### Deploy
 ```bash
 azd env new obo
-azd env set SF_AUTH_MODE obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
 azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
@@ -77,27 +62,16 @@ azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 azd up
 ```
 
-### Deploy (OAuth2 mode — existing behavior)
-```bash
-azd env set SF_AUTH_MODE oauth2   # or omit (default)
-azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
-azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
-azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
-azd up
-```
-
 ### Environment Variables
 
-| Variable | OAuth2 | OBO | Description |
-|----------|--------|-----|-------------|
-| `SF_AUTH_MODE` | `oauth2` (default) | `obo` | Auth flow selection |
-| `SF_INSTANCE_URL` | Required | Required | SF org My Domain URL |
-| `SF_CONNECTED_APP_CLIENT_ID` | Required | Required | Connected App consumer key |
-| `SF_CONNECTED_APP_CLIENT_SECRET` | Required | Not needed | Connected App consumer secret |
-| `SF_JWT_BEARER_CERT_THUMBPRINT` | — | Required | Certificate thumbprint for APIM policy |
-| `SF_JWT_BEARER_CERT_NAME` | — | `sf-jwt-bearer` | Key Vault certificate name |
-| `SF_SERVICE_ACCOUNT_USERNAME` | — | Required | SF service account username for SOQL lookups (any profile; needs `MCP_OBO_Service_Account` Permission Set) |
-| `IDENTITY_CLAIM_NAME` | — | `oid` (default) | JWT claim for user identity (change for non-Azure IdPs) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SF_INSTANCE_URL` | Yes | SF org My Domain URL |
+| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Connected App consumer key |
+| `SF_JWT_BEARER_CERT_THUMBPRINT` | Yes | Certificate thumbprint for APIM policy |
+| `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL lookups |
+| `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
+| `IDENTITY_CLAIM_NAME` | No | JWT claim for user identity (default: `oid`) |
 
 ### Key Paths
 
@@ -117,7 +91,7 @@ azd up
 - `src/chat-app/` — FastAPI + MSAL.js frontend
 
 **Hooks & Scripts:**
-- `hooks/postprovision.py` — Entra app + Foundry Agent + connection setup (auth-mode-aware)
+- `hooks/postprovision.py` — Entra app + Foundry Agent + OBO connection setup
 - `scripts/setup-sf-obo-eca.py` — Create SF Connected App for JWT Bearer via Metadata API
 - `scripts/set-sf-federation-id.py` — Set FederationIdentifier on SF users
 - `scripts/setup-sf-org.py` — Consolidated SF org setup orchestrator

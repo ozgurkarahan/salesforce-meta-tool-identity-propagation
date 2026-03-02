@@ -2,16 +2,10 @@
 
 After Bicep deploys Azure resources, this hook:
 1. Creates Chat App Entra app registration (az CLI — delegated permissions)
-2. Creates the Foundry agent with Salesforce MCP tool
+2. Creates the Foundry agent with Salesforce MCP tool (OBO connection)
 3. Updates Chat App Container App env vars
-4. Configures auth-mode-specific resources:
-   - oauth2 (default): Recreates SF OAuth connection via DELETE+PUT (ApiHub)
-   - obo: Updates APIM Named Values for JWT Bearer token exchange
-5. Updates APIM SfInstanceUrl Named Value
-
-SF_AUTH_MODE env var controls the auth flow:
-- "oauth2" (default): User authenticates to both Azure AD and Salesforce (PKCE consent)
-- "obo": User authenticates to Azure AD only; APIM exchanges for SF token (JWT Bearer)
+4. Recreates OBO connection via ARM REST + updates APIM Named Values
+5. Updates APIM SfInstanceUrl Named Value (if SF_INSTANCE_URL is set)
 
 Uses az CLI for Entra ops because the Graph Bicep extension requires
 Application.ReadWrite.All on the ARM deployment identity, which is not
@@ -169,162 +163,18 @@ def update_chat_app_settings():
 
     agent_name = "salesforce-assistant"
 
-    # Connection config env vars — needed by /api/reset-mcp-auth endpoint
-    sub_id = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
-    account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
-    project_name = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
-    apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-    sf_client_id = os.environ.get("SF_CONNECTED_APP_CLIENT_ID", "")
-    sf_client_secret = os.environ.get("SF_CONNECTED_APP_CLIENT_SECRET", "")
-    sf_instance_url = os.environ.get("SF_INSTANCE_URL", "")
-
     print(f"  Updating {chat_app_name} environment variables...")
     result = run(
         f'az containerapp update --name {chat_app_name} --resource-group {rg} '
         f'--set-env-vars '
         f'"CHAT_APP_ENTRA_CLIENT_ID={client_id}" '
         f'"TENANT_ID={tenant_id}" '
-        f'"AGENT_NAME={agent_name}" '
-        f'"AZURE_SUBSCRIPTION_ID={sub_id}" '
-        f'"AZURE_RESOURCE_GROUP={rg}" '
-        f'"COGNITIVE_ACCOUNT_NAME={account}" '
-        f'"AI_FOUNDRY_PROJECT_NAME={project_name}" '
-        f'"APIM_GATEWAY_URL={apim_gateway}" '
-        f'"SF_CONNECTED_APP_CLIENT_ID={sf_client_id}" '
-        f'"SF_CONNECTED_APP_CLIENT_SECRET={sf_client_secret}" '
-        f'"SF_INSTANCE_URL={sf_instance_url}"',
+        f'"AGENT_NAME={agent_name}"',
     )
     if result is not None:
         print("  Container App env vars updated")
     else:
         print("  WARNING: Failed to update Container App env vars")
-
-
-def update_sf_oauth_connection():
-    """Recreate the Salesforce OAuth connection with real credentials via ARM REST.
-
-    Bicep-created connections do NOT register the ApiHub connector that Foundry
-    needs for interactive OAuth consent. The fix is to DELETE the Bicep-created
-    connection and PUT a fresh one via ARM REST, which triggers ApiHub setup.
-
-    Reads SF_CONNECTED_APP_CLIENT_ID and SF_CONNECTED_APP_CLIENT_SECRET from env.
-    Skips gracefully if not set.
-    """
-    client_id = os.environ.get("SF_CONNECTED_APP_CLIENT_ID", "")
-    client_secret = os.environ.get("SF_CONNECTED_APP_CLIENT_SECRET", "")
-
-    if not client_id or not client_secret:
-        print("  Skipping — SF_CONNECTED_APP_CLIENT_ID or SF_CONNECTED_APP_CLIENT_SECRET not set")
-        print("  Set them with: azd env set SF_CONNECTED_APP_CLIENT_ID <consumer-key>")
-        print("                 azd env set SF_CONNECTED_APP_CLIENT_SECRET <consumer-secret>")
-        return
-
-    connection_name = os.environ.get("SF_OAUTH_CONNECTION_NAME", "salesforce-oauth")
-    sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_ENDPOINT", "")
-
-    if not sf_mcp_endpoint:
-        apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-        if apim_gateway:
-            sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp/mcp"
-    if not sf_mcp_endpoint:
-        print("  WARNING: No SF MCP endpoint — skipping connection update")
-        return
-
-    sub_id = run("az account show --query id -o tsv")
-    if not sub_id:
-        print("  WARNING: Could not get subscription ID")
-        return
-
-    rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
-    account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
-    project = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
-
-    url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.CognitiveServices/accounts/{account}"
-        f"/projects/{project}/connections/{connection_name}"
-        f"?api-version=2025-04-01-preview"
-    )
-
-    # Step 1: Delete the Bicep-created connection
-    print(f"  Deleting Bicep-created connection '{connection_name}'...")
-    run(f'az rest --method DELETE --url "{url}"')
-
-    # Use My Domain URL for OAuth so consent routes through Azure AD SSO.
-    sf_login_url = (
-        os.environ.get("SF_LOGIN_URL")
-        or os.environ.get("SF_INSTANCE_URL")
-        or "https://login.salesforce.com"
-    )
-
-    # Step 2: Recreate via ARM REST PUT (triggers ApiHub connector registration)
-    body = {
-        "properties": {
-            "authType": "OAuth2",
-            "category": "RemoteTool",
-            "group": "GenericProtocol",
-            "connectorName": connection_name,
-            "target": sf_mcp_endpoint,
-            "credentials": {
-                "clientId": client_id,
-                "clientSecret": client_secret,
-            },
-            "authorizationUrl": f"{sf_login_url}/services/oauth2/authorize",
-            "tokenUrl": f"{sf_login_url}/services/oauth2/token",
-            "refreshUrl": f"{sf_login_url}/services/oauth2/token",
-            "scopes": ["api", "refresh_token"],
-            "metadata": {"type": "custom_MCP"},
-            "isSharedToAll": True,
-        }
-    }
-
-    body_file = _write_temp_json(body)
-    try:
-        print(f"  Recreating connection '{connection_name}' via ARM REST...")
-        result = run(
-            f'az rest --method PUT --url "{url}" '
-            f'--headers "Content-Type=application/json" '
-            f'--body "@{body_file}"',
-            parse_json=True,
-        )
-        if result:
-            print("  SF OAuth connection created (ApiHub connector registered)")
-            # Print ApiHub redirect URI for SF Connected App callback
-            _print_sf_apihub_redirect_uri(connection_name)
-        else:
-            print("  WARNING: Failed to create SF OAuth connection")
-    finally:
-        os.unlink(body_file)
-
-
-def _print_sf_apihub_redirect_uri(connection_name: str):
-    """Print the ApiHub redirect URI so the user can add it to SF Connected App."""
-    sub_id = run("az account show --query id -o tsv")
-    rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
-    account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
-    project_name = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
-
-    if not all([sub_id, rg, account, project_name]):
-        return
-
-    project_url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.CognitiveServices/accounts/{account}"
-        f"/projects/{project_name}?api-version=2025-04-01-preview"
-    )
-    project_props = run(
-        f'az rest --method GET --url "{project_url}" '
-        f'--query "properties.internalId" -o tsv',
-    )
-    if project_props:
-        iid = project_props.strip()
-        guid = f"{iid[:8]}-{iid[8:12]}-{iid[12:16]}-{iid[16:20]}-{iid[20:]}"
-        connector_id = f"{guid}-{connection_name}"
-        redirect_uri = f"https://global.consent.azure-apim.net/redirect/{connector_id}"
-        print(f"\n  ** Add this redirect URI to your SF Connected App callback URLs: **")
-        print(f"  {redirect_uri}\n")
 
 
 def update_obo_apim_named_values():
@@ -431,6 +281,7 @@ def update_obo_connection():
             "authType": "UserEntraToken",
             "category": "RemoteTool",
             "target": sf_mcp_obo_endpoint,
+            "audience": "https://ai.azure.com",
             "metadata": {"type": "custom_MCP"},
             "isSharedToAll": True,
         }
@@ -453,95 +304,31 @@ def update_obo_connection():
         os.unlink(body_file)
 
 
-def update_sf_apim_named_value():
-    """Update the APIM SfInstanceUrl Named Value with the real org instance URL.
-
-    SF JWT tokens use org-specific issuer/audience (the instance URL, not
-    login.salesforce.com). Bicep deploys a placeholder; this patches it.
-    """
-    sf_instance_url = os.environ.get("SF_INSTANCE_URL", "")
-    if not sf_instance_url:
-        print("  Skipping — SF_INSTANCE_URL not set")
-        return
-
-    sub_id = run("az account show --query id -o tsv")
-    rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
-    apim_name = os.environ.get("APIM_NAME", "")
-
-    if not sub_id:
-        print("  WARNING: Could not get subscription ID — skipping")
-        return
-
-    url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.ApiManagement/service/{apim_name}"
-        f"/namedValues/SfInstanceUrl"
-        f"?api-version=2024-06-01-preview"
-    )
-
-    body = {
-        "properties": {
-            "displayName": "SfInstanceUrl",
-            "value": sf_instance_url,
-            "secret": False,
-        }
-    }
-
-    body_file = _write_temp_json(body)
-    try:
-        print(f"  Updating APIM Named Value 'SfInstanceUrl' = {sf_instance_url}...")
-        result = run(
-            f'az rest --method PUT --url "{url}" '
-            f'--headers "Content-Type=application/json" '
-            f'--body "@{body_file}"',
-            parse_json=True,
-        )
-        if result:
-            print("  Named Value updated successfully")
-        else:
-            print("  WARNING: Failed to update Named Value")
-    finally:
-        os.unlink(body_file)
-
-
 def create_agent():
     """Create a Foundry agent with the Salesforce MCP tool using the v2 SDK.
 
-    In OBO mode, uses the OBO connection (AAD auth) and the OBO APIM endpoint.
-    In OAuth2 mode, uses the OAuth connection (ApiHub consent) and the standard endpoint.
+    Uses the OBO connection (UserEntraToken) and the OBO APIM endpoint.
     """
-    auth_mode = os.environ.get("SF_AUTH_MODE", "oauth2")
     project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT")
 
     if not project_endpoint:
         print("WARNING: Missing AI_FOUNDRY_PROJECT_ENDPOINT — skipping agent creation.")
         return
 
-    # Select endpoint and connection based on auth mode
-    if auth_mode == "obo":
-        sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
-        if not sf_mcp_endpoint:
-            apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-            if apim_gateway:
-                sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
-        connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
-    else:
-        sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_ENDPOINT", "")
-        if not sf_mcp_endpoint:
-            apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-            if apim_gateway:
-                sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp/mcp"
-        connection_name = os.environ.get("SF_OAUTH_CONNECTION_NAME", "")
+    sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
+    if not sf_mcp_endpoint:
+        apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
+        if apim_gateway:
+            sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
+    connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
 
     if not sf_mcp_endpoint:
         print("WARNING: No SF MCP endpoint available — skipping agent creation.")
         return
 
-    print(f"\nAuth mode:        {auth_mode}")
-    print(f"Project endpoint: {project_endpoint}")
+    print(f"\nProject endpoint: {project_endpoint}")
     print(f"SF MCP endpoint:  {sf_mcp_endpoint}")
-    print(f"Connection:       {connection_name or '(none)'}")
+    print(f"Connection:       {connection_name}")
 
     from azure.identity import DefaultAzureCredential
     from azure.ai.projects import AIProjectClient
@@ -596,28 +383,14 @@ def create_agent():
     )
     print(f"Agent created: name={agent.name}, version={agent.version}, id={agent.id}")
     print(f"  Tools: {len(tools)} MCP tool(s) configured")
-    print(f"  Auth mode: {auth_mode}")
-
-    # --- Smoke test ---
-    if auth_mode == "obo":
-        print("\n--- Smoke test skipped (OBO mode) ---")
-        print("OBO flow requires no consent. Send a chat message to test.")
-    elif connection_name:
-        print("\n--- Smoke test skipped (OAuth configured) ---")
-        print("Run the interactive OAuth test to verify end-to-end:")
-        print("  python scripts/test-agent-oauth.py")
-    else:
-        print("\n--- Smoke test skipped (no connection) ---")
-        print("Set SF credentials and re-run to enable auth flow.")
-
-    print(f"\nAgent: {agent.name} v{agent.version}")
+    print("\nOBO flow requires no consent. Send a chat message to test.")
+    print(f"Agent: {agent.name} v{agent.version}")
 
 
 def main():
-    auth_mode = os.environ.get("SF_AUTH_MODE", "oauth2")
-    print(f"=== Post-provision hook (SF_AUTH_MODE={auth_mode}) ===\n")
+    print("=== Post-provision hook (OBO) ===\n")
 
-    # Step 1: Create Chat App Entra registration (both modes)
+    # Step 1: Create Chat App Entra registration
     print("--- Step 1: Chat App Entra registration ---")
     try:
         create_chat_app_entra_registration()
@@ -625,7 +398,7 @@ def main():
         print(f"\nWARNING: Chat App Entra registration failed (non-fatal): {e}")
         traceback.print_exc()
 
-    # Step 2: Create Foundry agent (both modes — uses auth-mode-aware connection)
+    # Step 2: Create Foundry agent
     print("\n--- Step 2: Create Foundry agent ---")
     try:
         create_agent()
@@ -634,7 +407,7 @@ def main():
         print("Re-run with: python hooks/postprovision.py")
         traceback.print_exc()
 
-    # Step 3: Update Chat App env vars (both modes)
+    # Step 3: Update Chat App env vars
     print("\n--- Step 3: Update Chat App settings ---")
     try:
         update_chat_app_settings()
@@ -642,40 +415,22 @@ def main():
         print(f"\nWARNING: Chat App settings update failed (non-fatal): {e}")
         traceback.print_exc()
 
-    # Step 4: Auth-mode-specific connection setup
-    if auth_mode == "obo":
-        # OBO: Recreate OBO connection + update APIM named values for JWT Bearer
-        print("\n--- Step 4: Salesforce OBO connection ---")
-        try:
-            update_obo_connection()
-        except Exception as e:
-            print(f"\nWARNING: SF OBO connection update failed (non-fatal): {e}")
-            traceback.print_exc()
-
-        print("\n--- Step 4b: OBO APIM Named Values ---")
-        try:
-            update_obo_apim_named_values()
-        except Exception as e:
-            print(f"\nWARNING: OBO APIM Named Values update failed (non-fatal): {e}")
-            traceback.print_exc()
-    else:
-        # OAuth2: Recreate OAuth connection (triggers ApiHub connector registration)
-        print("\n--- Step 4: Salesforce OAuth connection ---")
-        try:
-            update_sf_oauth_connection()
-        except Exception as e:
-            print(f"\nWARNING: SF OAuth connection update failed (non-fatal): {e}")
-            traceback.print_exc()
-
-    # Step 5: Update APIM SfInstanceUrl Named Value (both modes)
-    print("\n--- Step 5: Update APIM SfInstanceUrl Named Value ---")
+    # Step 4: Recreate OBO connection + update APIM Named Values
+    print("\n--- Step 4: Salesforce OBO connection ---")
     try:
-        update_sf_apim_named_value()
+        update_obo_connection()
     except Exception as e:
-        print(f"\nWARNING: SF APIM Named Value update failed (non-fatal): {e}")
+        print(f"\nWARNING: SF OBO connection update failed (non-fatal): {e}")
         traceback.print_exc()
 
-    print(f"\n=== Post-provision hook complete (mode: {auth_mode}) ===")
+    print("\n--- Step 4b: OBO APIM Named Values ---")
+    try:
+        update_obo_apim_named_values()
+    except Exception as e:
+        print(f"\nWARNING: OBO APIM Named Values update failed (non-fatal): {e}")
+        traceback.print_exc()
+
+    print("\n=== Post-provision hook complete ===")
 
 
 if __name__ == "__main__":

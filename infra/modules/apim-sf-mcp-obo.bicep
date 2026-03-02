@@ -44,9 +44,17 @@ resource apim 'Microsoft.ApiManagement/service@2024-06-01-preview' existing = {
 
 // --------------------------------------------------------------------------
 // Named Values for OBO policies
-// APIMGatewayURL is created by the apim-sf-mcp module (always deployed).
-// This module must depend on apim-sf-mcp in main.bicep to avoid race conditions.
 // --------------------------------------------------------------------------
+resource apimGatewayUrlNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01-preview' = {
+  parent: apim
+  name: 'APIMGatewayURL'
+  properties: {
+    displayName: 'APIMGatewayURL'
+    value: apim.properties.gatewayUrl
+    secret: false
+  }
+}
+
 resource tenantIdNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01-preview' = {
   parent: apim
   name: 'TenantId'
@@ -212,9 +220,7 @@ resource sfOboPrmOpPolicy 'Microsoft.ApiManagement/service/apis/operations/polic
     format: 'rawxml'
     value: loadTextContent('../policies/sf-mcp-obo-prm-policy.xml')
   }
-  // APIMGatewayURL Named Value is created by apim-sf-mcp module (cross-module).
-  // Ordering is enforced via dependsOn in main.bicep (apimSfMcpObo depends on apimSfMcp).
-  dependsOn: [ tenantIdNV ]
+  dependsOn: [ tenantIdNV, apimGatewayUrlNV ]
 }
 
 // --------------------------------------------------------------------------

@@ -2,24 +2,21 @@
 
 Orchestrates all SF setup phases in sequence after `sf org login web`:
 
-  Step 1/5: SSO Federation        -- Entra App + Auth Provider + Apex handler
-  Step 2/5: External Client App   -- ECA metadata + OAuth settings deployment
-  Step 3/5: ECA Callback URL      -- Add ApiHub redirect URI to ECA's OAuth callbacks
-  Step 4/5: Demo User + Test Data -- Custom profile (no Account delete) + user + sample data
-  Step 5/5: OBO Service Account   -- Dedicated service user for JWT Bearer flow
+  Step 1/3: SSO Federation        -- Entra App + Auth Provider + Apex handler
+  Step 2/3: Demo User + Test Data -- Custom profile (no Account delete) + user + sample data
+  Step 3/3: OBO Service Account   -- Dedicated service user for JWT Bearer flow
 
 Each step calls an existing standalone script via subprocess with pass-through
 stdin/stdout, so interactive steps (SSO browser login) work correctly.
 
 Prerequisites:
-- az CLI logged in (for SSO + callback URL steps)
+- az CLI logged in (for SSO step)
 - sf CLI authenticated to the target org: sf org login web --alias <alias>
-- azd env loaded (for callback URL config, optional for other steps)
 
 Usage:
     python scripts/setup-sf-org.py --org <alias> --email <admin-email>
-    python scripts/setup-sf-org.py --org <alias> --email <admin-email> --skip sso callback
-    python scripts/setup-sf-org.py --org <alias> --email <admin-email> --only eca demo svcacct
+    python scripts/setup-sf-org.py --org <alias> --email <admin-email> --skip sso
+    python scripts/setup-sf-org.py --org <alias> --email <admin-email> --only demo svcacct
 """
 
 import argparse
@@ -36,15 +33,11 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
 # Script paths
 SSO_SCRIPT = os.path.join(REPO_ROOT, ".claude", "scripts", "setup-salesforce-sso.py")
-ECA_SCRIPT = os.path.join(SCRIPT_DIR, "setup-sf-external-client-app.py")
-CALLBACK_SCRIPT = os.path.join(SCRIPT_DIR, "configure-sf-connected-app.py")
 DEMO_USER_SCRIPT = os.path.join(SCRIPT_DIR, "setup-sf-demo-user.py")
 SVC_ACCOUNT_SCRIPT = os.path.join(SCRIPT_DIR, "setup-sf-service-account.py")
 
 STEPS = [
     ("sso", "SSO Federation"),
-    ("eca", "External Client App"),
-    ("callback", "ECA Callback URL Config"),
     ("demo", "Demo User + Test Data"),
     ("svcacct", "OBO Service Account"),
 ]
@@ -100,7 +93,7 @@ def check_prerequisites(org: str):
 def main():
     parser = argparse.ArgumentParser(
         description="Consolidated Salesforce org setup after Dev Trial creation. "
-        "Chains all setup phases: SSO -> ECA -> Callback URL -> Demo User -> OBO Service Account."
+        "Chains all setup phases: SSO -> Demo User -> OBO Service Account."
     )
     parser.add_argument(
         "--org", required=True,
@@ -109,10 +102,6 @@ def main():
     parser.add_argument(
         "--email", required=True,
         help="Admin email (used for ECA contact + demo user password reset)",
-    )
-    parser.add_argument(
-        "--app-name", default="Identity_PoC_MCP",
-        help="External Client App developer name (default: Identity_PoC_MCP)",
     )
     parser.add_argument(
         "--skip", nargs="+", choices=STEP_KEYS, default=[],
@@ -141,7 +130,6 @@ def main():
     print()
     print(f"  Org alias:  {args.org}")
     print(f"  Email:      {args.email}")
-    print(f"  App name:   {args.app_name}")
     print()
 
     # Show step plan
@@ -176,35 +164,7 @@ def main():
                 _print_summary(results, steps_to_run, start_time)
                 sys.exit(1)
 
-    # Step 2: External Client App
-    if "eca" in steps_to_run:
-        step_num += 1
-        ok = run_step(
-            step_num, total, "External Client App",
-            f'python "{ECA_SCRIPT}" '
-            f"--org {args.org} --email {args.email} --app-name {args.app_name}",
-        )
-        results["eca"] = "OK" if ok else "FAILED"
-        if not ok and not args.continue_on_error:
-            print("\n  Stopping (use --continue-on-error to proceed past failures)")
-            _print_summary(results, steps_to_run, start_time)
-            sys.exit(1)
-
-    # Step 3: ECA Callback URL Config
-    if "callback" in steps_to_run:
-        step_num += 1
-        ok = run_step(
-            step_num, total, "ECA Callback URL Config",
-            f'python "{CALLBACK_SCRIPT}" '
-            f"--app-name {args.app_name} --org {args.org}",
-        )
-        results["callback"] = "OK" if ok else "FAILED"
-        if not ok and not args.continue_on_error:
-            print("\n  Stopping (use --continue-on-error to proceed past failures)")
-            _print_summary(results, steps_to_run, start_time)
-            sys.exit(1)
-
-    # Step 4: Demo User + Test Data
+    # Step 2: Demo User + Test Data
     if "demo" in steps_to_run:
         step_num += 1
         ok = run_step(
@@ -218,7 +178,7 @@ def main():
             _print_summary(results, steps_to_run, start_time)
             sys.exit(1)
 
-    # Step 5: OBO Service Account
+    # Step 3: OBO Service Account
     if "svcacct" in steps_to_run:
         step_num += 1
         ok = run_step(
@@ -263,13 +223,14 @@ def _print_summary(results: dict, steps_to_run: set, start_time: float):
 
     print()
     print("  MANUAL STEPS REMAINING:")
-    print("  1. Copy Consumer Secret from SF Setup:")
-    print("     Setup > App Manager > Identity PoC MCP > Manage Consumer Details")
-    print("     Then run: azd env set SF_CONNECTED_APP_CLIENT_SECRET <secret>")
-    print('  2. Enable "Azure AD" on My Domain login page:')
+    print('  1. Enable "Azure AD" on My Domain login page:')
     print("     Setup > My Domain > Authentication Configuration > Edit")
-    print("  3. Run: azd up")
-    print("  4. Complete OAuth consent in browser when prompted")
+    print("  2. Upload PFX certificate to Azure Key Vault as 'sf-jwt-bearer'")
+    print("  3. Set env vars and deploy:")
+    print("     azd env set SF_CONNECTED_APP_CLIENT_ID <consumer-key>")
+    print("     azd env set SF_JWT_BEARER_CERT_THUMBPRINT <thumbprint>")
+    print("     azd env set SF_SERVICE_ACCOUNT_USERNAME <svc@your-org.my.salesforce.com>")
+    print("     azd up")
     print()
 
 

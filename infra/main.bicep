@@ -17,14 +17,6 @@ param sfInstanceUrl string = ''
 @description('Salesforce Connected App client ID (consumer key)')
 param sfConnectedAppClientId string = 'placeholder-updated-by-hook'
 
-@secure()
-@description('Salesforce Connected App client secret (consumer secret)')
-param sfConnectedAppClientSecret string = newGuid()
-
-@description('Auth mode: oauth2 (default, PKCE consent) or obo (JWT Bearer, no consent)')
-@allowed(['oauth2', 'obo'])
-param sfAuthMode string = 'oauth2'
-
 @description('Name of the SF JWT Bearer certificate in Key Vault (uploaded separately)')
 param sfJwtBearerCertName string = 'sf-jwt-bearer'
 
@@ -204,24 +196,10 @@ module apim 'modules/apim.bicep' = {
 }
 
 // ============================================================
-// Tier 3.5: Salesforce MCP APIM Proxy (depends on APIM + SF MCP Container App)
+// Tier 3.5: Salesforce MCP OBO APIM Proxy (depends on APIM + SF MCP Container App)
 // ============================================================
 
-module apimSfMcp 'modules/apim-sf-mcp.bicep' = {
-  name: 'apim-sf-mcp'
-  scope: rg
-  params: {
-    apimName: apim.outputs.apimName
-    sfMcpFqdn: sfMcpApp.outputs.sfMcpFqdn
-    sfInstanceUrl: !empty(sfInstanceUrl) ? sfInstanceUrl : 'https://login.salesforce.com'
-  }
-}
-
-// ============================================================
-// Tier 3.5b: Salesforce MCP OBO APIM Proxy (OBO mode only)
-// ============================================================
-
-module apimSfMcpObo 'modules/apim-sf-mcp-obo.bicep' = if (sfAuthMode == 'obo') {
+module apimSfMcpObo 'modules/apim-sf-mcp-obo.bicep' = {
   name: 'apim-sf-mcp-obo'
   scope: rg
   params: {
@@ -234,8 +212,6 @@ module apimSfMcpObo 'modules/apim-sf-mcp-obo.bicep' = if (sfAuthMode == 'obo') {
     sfServiceAccountUsername: sfServiceAccountUsername
     identityClaimName: identityClaimName
   }
-  // Depends on apimSfMcp for the APIMGatewayURL Named Value used by the PRM policy
-  dependsOn: [ apimSfMcp ]
 }
 
 // ============================================================
@@ -281,21 +257,8 @@ module chatAppCognitiveContributor 'modules/role-assignment.bicep' = {
   }
 }
 
-module sfOAuthConnection 'modules/sf-oauth-connection.bicep' = if (sfAuthMode == 'oauth2') {
-  name: 'sf-oauth-connection'
-  scope: rg
-  params: {
-    cognitiveAccountName: cognitive.outputs.cognitiveAccountName
-    projectName: cognitive.outputs.projectName
-    sfMcpEndpoint: apimSfMcp.outputs.sfMcpEndpoint
-    clientId: sfConnectedAppClientId
-    clientSecret: sfConnectedAppClientSecret
-    sfLoginUrl: !empty(sfInstanceUrl) ? sfInstanceUrl : 'https://login.salesforce.com'
-  }
-}
-
-// OBO connection: passes Azure AD token through to APIM (OBO mode only)
-module sfOboConnection 'modules/sf-obo-connection.bicep' = if (sfAuthMode == 'obo') {
+// OBO connection: passes Azure AD token through to APIM
+module sfOboConnection 'modules/sf-obo-connection.bicep' = {
   name: 'sf-obo-connection'
   scope: rg
   params: {
@@ -305,8 +268,8 @@ module sfOboConnection 'modules/sf-obo-connection.bicep' = if (sfAuthMode == 'ob
   }
 }
 
-// OBO: Grant APIM access to Key Vault certificates for JWT signing
-module keyvaultApimAccess 'modules/keyvault.bicep' = if (sfAuthMode == 'obo') {
+// Grant APIM access to Key Vault certificates for JWT signing
+module keyvaultApimAccess 'modules/keyvault.bicep' = {
   name: 'keyvault-apim-access'
   scope: rg
   params: {
@@ -322,7 +285,7 @@ module keyvaultApimAccess 'modules/keyvault.bicep' = if (sfAuthMode == 'obo') {
 // Must run AFTER keyvaultApimAccess so APIM has "Key Vault Secrets User" role.
 // ============================================================
 
-module apimJwtBearerCert 'modules/apim-jwt-bearer-cert.bicep' = if (sfAuthMode == 'obo') {
+module apimJwtBearerCert 'modules/apim-jwt-bearer-cert.bicep' = {
   name: 'apim-jwt-bearer-cert'
   scope: rg
   params: {
@@ -351,11 +314,8 @@ output CHAT_APP_FQDN string = chatApp.outputs.chatAppFqdn
 output CHAT_APP_CONTAINER_APP_NAME string = chatApp.outputs.chatAppName
 output SF_MCP_CONTAINER_APP_NAME string = sfMcpApp.outputs.sfMcpAppName
 output SF_MCP_FQDN string = sfMcpApp.outputs.sfMcpFqdn
-output APIM_SF_MCP_ENDPOINT string = apimSfMcp.outputs.sfMcpEndpoint
-output SF_AUTH_MODE string = sfAuthMode
-output SF_OAUTH_CONNECTION_NAME string = sfAuthMode == 'oauth2' ? sfOAuthConnection.outputs.connectionName : ''
-output SF_OBO_CONNECTION_NAME string = sfAuthMode == 'obo' ? sfOboConnection.outputs.connectionName : ''
-output APIM_SF_MCP_OBO_ENDPOINT string = sfAuthMode == 'obo' ? apimSfMcpObo.outputs.sfMcpOboEndpoint : ''
+output SF_OBO_CONNECTION_NAME string = sfOboConnection.outputs.connectionName
+output APIM_SF_MCP_OBO_ENDPOINT string = apimSfMcpObo.outputs.sfMcpOboEndpoint
 output KEY_VAULT_NAME string = keyvault.outputs.keyVaultName
 // CHAT_APP_ENTRA_CLIENT_ID set by postprovision hook
 // (Entra apps created via az CLI, not Bicep)
