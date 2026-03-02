@@ -16,15 +16,17 @@ azd up   # deploys the full stack in ~15 minutes
 
 ## The Idea: Meta-Tool Pattern
 
-Most Salesforce MCP servers define one tool per object (`get_accounts`, `get_opportunities`, …). That approach doesn't scale: an org with 100 custom objects needs 100 tools.
+### The Pattern
+
+Most Salesforce MCP servers define one tool per object (`get_accounts`, `get_opportunities`, ...). That approach doesn't scale: an org with 100 custom objects needs 100 tools.
 
 This project uses a different pattern, borrowed from how Claude Code works:
 
 ```
 Developer World                    Enterprise World
-─────────────────                  ─────────────────
-Bash (meta-tool)          →        Salesforce MCP Server (meta-tool)
-  └─ git, npm, docker               └─ list, describe, query, search, write, approve
+-----------------                  -----------------
+Bash (meta-tool)          ->       Salesforce MCP Server (meta-tool)
+  +- git, npm, docker                +- list, describe, query, search, write, approve
      kubectl, terraform                 covers any object, any field, any workflow
 ```
 
@@ -34,40 +36,37 @@ Bash (meta-tool)          →        Salesforce MCP Server (meta-tool)
 
 The server is a thin metadata-driven bridge: the agent calls `describe_object("Account")`, learns the schema, and constructs the SOQL query, instead of calling a hardcoded `get_accounts()` function.
 
----
+### How the Agent Thinks
 
-## Quick Start
+A concrete example. The user asks:
 
-### Prerequisites
+> *"Show me my open opportunities worth over $100k"*
 
-| Requirement | Version | Link |
-|-------------|---------|------|
-| Azure subscription | — | [Free trial](https://azure.microsoft.com/free/) |
-| Azure Developer CLI | 1.5+ | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
-| Python | 3.11+ | [python.org](https://www.python.org/) |
-| Docker Desktop | — | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
+The agent has never seen this Salesforce org before. It doesn't have a hardcoded `get_opportunities()` tool. Instead, it reasons through the meta-tools:
 
-Single sign-on: user authenticates to Azure AD, APIM exchanges for a Salesforce token server-side via JWT Bearer.
+1. **Discover the object.** The agent calls `list_objects(filter="Opportunity")`. Salesforce returns the object name, label, and CRUD flags. The agent now knows `Opportunity` exists and is queryable.
 
-```bash
-git clone https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation.git
-cd salesforce-meta-tool-identity-propagation
+2. **Learn the schema.** The agent calls `describe_object("Opportunity")`. Salesforce returns every field: `Name` (string), `Amount` (currency), `StageName` (picklist with values like "Closed Won", "Closed Lost", "Prospecting"...), `IsClosed` (boolean), and 60+ more. The agent now knows the field names, types, and valid values.
 
-azd env new obo
-azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
-azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
-azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
-azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
+3. **Construct the query.** From the schema, the agent builds:
+   ```sql
+   SELECT Name, Amount, StageName, CloseDate, Account.Name
+   FROM Opportunity
+   WHERE Amount > 100000 AND IsClosed = false
+   ORDER BY Amount DESC
+   ```
 
-azd up
-```
+4. **Execute.** The agent calls `soql_query(...)` with that query. Salesforce returns *the user's own data*, filtered by their sharing rules and field-level security. A sales rep sees their pipeline. A VP sees the full forecast. Same query, different results, because identity propagation is enforced end-to-end.
 
-> **Salesforce prerequisites:** Connected App with JWT Bearer flow enabled, certificate uploaded, service account with `MCP_OBO_Service_Account` Permission Set, FederationIdentifier set on each user. See [Setting Up Salesforce](#setting-up-salesforce) below.
+No tool was written for opportunities. No schema was pre-loaded. The agent discovered, learned, and queried at runtime.
 
-### First Use
+### Why This Scales
 
-After `azd up` completes, open the Chat App at the URL printed at the end of deployment. Sign in with your Azure AD account and send a message (e.g., *"Show me my Salesforce accounts"*). OBO mode works immediately — no Salesforce consent required.
+The tool surface is **fixed**: six tools, 1,235 tokens. Whether the org has 50 objects or 5,000, the MCP server definition doesn't change.
+
+Schemas are loaded **on demand**. A `describe_object` call returns field metadata at runtime, so the agent only pays context-window cost for objects it actually uses. A complex multi-step workflow will consume additional context, but this is intentional: load what you need, when you need it.
+
+This is the same pattern that makes Claude Code effective: Bash + a filesystem is a fixed interface that scales to any codebase.
 
 ---
 
@@ -90,9 +89,9 @@ Compare with the alternatives:
 
 | Approach | Token cost | Coverage |
 |----------|------------|----------|
-| Full OpenAPI spec | 5,000–15,000 | Hundreds of endpoints, most irrelevant |
-| RAG documentation chunks | 2,000–10,000 | Partial, depends on retrieval quality |
-| One tool per object | ~500 × N objects | Scales linearly, N can be 100+ |
+| Full OpenAPI spec | 5,000-15,000 | Hundreds of endpoints, most irrelevant |
+| RAG documentation chunks | 2,000-10,000 | Partial, depends on retrieval quality |
+| One tool per object | ~500 x N objects | Scales linearly, N can be 100+ |
 | **This MCP server** | **1,235 fixed** | **All objects, all fields, all operations** |
 
 > **Note:** The 1,235 tokens cover tool definitions. In practice, each `describe_object` call returns field schemas at runtime. A complex multi-step workflow will consume additional context. This is intentional: schemas are loaded on demand rather than pre-loaded into the system prompt.
@@ -113,33 +112,44 @@ Compare with the alternatives:
 
 ---
 
-## Identity Propagation: Why It Matters
+## Identity Propagation: End-to-End
+
+### The Problem
 
 The most common enterprise MCP pattern connects via a service account:
 
 ```
-User → Agent → Service Account → Salesforce
-                    ↑
-        Admin access. Sees ALL data. Bypasses sharing rules.
-        "List all opportunities" returns the entire pipeline.
+User -> Agent -> Service Account -> Salesforce
+                      ^
+          Admin access. Sees ALL data. Bypasses sharing rules.
+          "List all opportunities" returns the entire pipeline.
 ```
 
-This project propagates the user's own token through every layer:
-
-```
-┌──────────┐   ┌──────────────┐   ┌──────┐   ┌───────────────┐   ┌────────────┐
-│  User    │──▶│  AI Foundry  │──▶│ APIM │──▶│  Salesforce   │──▶│ Salesforce │
-│(browser) │   │  Agent       │   │      │   │  MCP Server   │   │ REST API   │
-└──────────┘   └──────────────┘   └──────┘   └───────────────┘   └────────────┘
-     │                                                                   │
-     └─────────────── same user identity, same permissions ──────────────┘
-```
-
-The user's Salesforce token flows through every layer, untouched, unescalated. The MCP server never stores tokens. The Salesforce API enforces the same CRUD permissions, field-level security, sharing rules, and approval workflows that apply when the user logs into the Salesforce UI directly.
+This project propagates the user's own identity through every layer. The Salesforce API enforces the same CRUD permissions, field-level security, sharing rules, and approval workflows that apply when the user logs into the Salesforce UI directly.
 
 **The agent becomes a power tool, not a privileged backdoor.**
 
-The entire identity propagation logic is seven lines:
+### Every Hop, Every Token
+
+Here is what happens when a user sends a message, traced through every authentication boundary:
+
+**1. User signs in.** MSAL.js acquires an Azure AD token (`aud=AzureML`, claims include `oid` and `upn`). The `oid` (object ID) is the user's immutable identity across all Azure AD apps in the tenant.
+
+**2. Chat App forwards to AI Foundry.** The Chat App passes the user's token to AI Foundry via `UserTokenCredential`. Foundry preserves the user's identity (`oid`, `upn`) through its internal OBO-like exchange.
+
+**3. Foundry acquires an APIM-audience token.** Foundry's OAuth client acquires a separate token scoped to the MCP Gateway audience (`aud=https://ai.azure.com`). The user's `oid` and `upn` claims are carried forward.
+
+**4. APIM validates the Azure AD JWT.** The `validate-jwt` policy checks the token against both v1 (`sts.windows.net`) and v2 (`login.microsoftonline.com`) issuers and the expected audience. The user's `oid` is extracted.
+
+**5. APIM resolves the Salesforce username.** APIM checks its cache for `sf-username-{oid}`. On miss: a service account token runs `SELECT Username FROM User WHERE FederationIdentifier = '{oid}'` against Salesforce. The result is cached for 1 hour.
+
+> **Why `oid` and not `sub`?** The `sub` claim is pairwise: it changes per app registration. `oid` is the same across all apps in the tenant, making it a stable identity anchor for the `FederationIdentifier` mapping.
+
+**6. APIM gets the user's Salesforce token.** APIM checks its cache for `sf-token-{username}`. On miss: it creates a JWT Bearer assertion with `sub` = the Salesforce username, signs it with a Key Vault certificate, and exchanges it at the Salesforce token endpoint. The result is cached for 30 minutes.
+
+**7. APIM forwards with the Salesforce token.** The original `Authorization` header is replaced with the user's Salesforce access token. The request continues to the MCP backend.
+
+**8. MCP server extracts the token.** The entire identity propagation logic on the MCP side is seven lines:
 
 ```python
 class BearerTokenMiddleware(BaseHTTPMiddleware):
@@ -153,11 +163,32 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             _request_token.reset(tok)
 ```
 
-### What Identity Propagation Does Not Protect Against
+**9. Salesforce enforces the user's own permissions.** Every API call runs as the mapped user. CRUD permissions, field-level security, sharing rules, and approval workflows all apply. A sales rep sees their pipeline. An admin sees everything. Same MCP server, different results.
+
+### Caching and Performance
+
+Three cache layers keep warm requests at ~0ms overhead:
+
+| Cache key | TTL | What it stores |
+|-----------|-----|---------------|
+| `sf-service-token` | 30 min | Service account token for SOQL user lookups |
+| `sf-username-{oid}` | 1 hour | Azure AD `oid` -> Salesforce username mapping |
+| `sf-token-{username}` | 30 min | Per-user Salesforce access token |
+
+On a 401 from Salesforce, APIM automatically evicts the cached user token. The next request re-exchanges transparently.
+
+### What It Does Not Protect Against
 
 Identity propagation prevents privilege escalation: the agent can't do more than the user. It does not prevent the agent from misunderstanding intent. A query like *"delete all closed-lost opportunities from 2023"* is valid SOQL that will execute with full authorization if the user has delete rights.
 
 For production use, treat destructive operations with the same care you'd apply to any irreversible action: confirmation prompts, audit logging, and appropriate permission scoping in Salesforce.
+
+### Key Guarantees
+
+- **No token stored.** The MCP server never persists, caches, or refreshes tokens. It reads the `Authorization` header and forwards it. Stateless.
+- **No scope escalation.** The Salesforce token is scoped to the mapped user. APIM cannot mint a token with broader permissions than the user has in Salesforce.
+- **Per-user audit trail.** Every Salesforce API call is logged under the user's own identity. The admin audit log shows *who* did *what*, not "the service account did everything."
+- **Stateless MCP server.** No session state, no token cache, no user database. The server can be replaced, scaled, or restarted without affecting any user's session.
 
 ---
 
@@ -165,160 +196,29 @@ For production use, treat destructive operations with the same care you'd apply 
 
 ```
 User (browser)
-  │
-  ├─[MSAL.js]──► Azure AD ──► token(aud=AzureML, appid=ChatApp)
-  │                                │
-  │                                ▼
-  ├───────────────────────► AI Foundry (Responses API)
-                                   │
-                                   ├─[UserEntraToken]──► Azure AD ──► token(aud=MCP-Gateway)
-                                   │                                        │
-                                   │                                        ▼
-                                   ├────────────────────────────────► APIM (validate-jwt)
-                                                                           │
+  |
+  +-[MSAL.js]--> Azure AD --> token(aud=AzureML, appid=ChatApp)
+  |                                |
+  |                                v
+  +--------------------------> AI Foundry (Responses API)
+                                   |
+                                   +-[UserEntraToken]--> Azure AD --> token(aud=MCP-Gateway)
+                                   |                                        |
+                                   |                                        v
+                                   +--------------------------------------> APIM (validate-jwt)
+                                                                           |
                                                                      [Three-phase exchange]
-                                                                           │
-                                                                           ▼
+                                                                           |
+                                                                           v
                                                                      SF MCP Server
-                                                                           │
-                                                                           ▼
+                                                                           |
+                                                                           v
                                                                      Salesforce API
 ```
 
-**Hop 1, User to Foundry:** MSAL.js acquires a token for the Chat App. The Chat App passes it to AI Foundry, which preserves the user's identity (`oid`, `upn`).
+See [Identity Propagation](#every-hop-every-token) for the detailed walkthrough of each hop.
 
-**Hop 2, Foundry to APIM:** Foundry's internal OAuth client acquires a separate token for the MCP Gateway audience. The user's identity is preserved through Foundry's On-Behalf-Of (OBO)-like exchange.
-
-**Three-Phase Token Exchange (APIM Policy):**
-
-1. **Phase 0, Validate:** APIM `validate-jwt` checks the Azure AD token (v1 and v2 issuers, audience `https://ai.azure.com`). Extracts user `oid`.
-2. **Phase 1, Resolve SF username:** Checks cache for `sf-username-{oid}`. On miss: acquires a service token, runs `SELECT Username FROM User WHERE FederationIdentifier = '{oid}'`. Caches 1 hour.
-3. **Phase 2, Get SF user token:** Checks cache for `sf-token-{username}`. On miss: creates JWT Bearer assertion with `sub = SF username`, signs with Key Vault certificate, exchanges at SF token endpoint. Caches 30 min.
-4. **Phase 3, Forward:** Replaces `Authorization` header with the SF access token, forwards to MCP backend.
-
-**Warm user overhead: ~0ms.** All three phases hit cache.
-
-The MCP server is **stateless**. It never stores, caches, or refreshes tokens.
-
----
-
-## Project Structure
-
-```
-salesforce-meta-tool-identity-propagation/
-├── azure.yaml                    # azd project: 2 services (chat-app, salesforce-mcp)
-├── src/
-│   ├── salesforce-mcp/
-│   │   ├── app.py                # The MCP server: 6 tools, bearer passthrough
-│   │   └── salesforce_client.py  # Async Salesforce REST client with auth
-│   └── chat-app/
-│       ├── app.py                # FastAPI backend, MSAL to Foundry agent bridge
-│       └── static/               # Vanilla JS SPA with MSAL.js
-├── infra/
-│   ├── main.bicep                # Orchestrator, all Azure resources
-│   ├── main.bicepparam           # Environment variable → Bicep param mapping
-│   ├── modules/
-│   │   ├── apim.bicep            # APIM Gateway
-│   │   ├── apim-sf-mcp-obo.bicep # OBO APIM API + Named Values
-│   │   ├── apim-jwt-bearer-cert.bicep  # Key Vault → APIM certificate binding
-│   │   ├── sf-obo-connection.bicep     # Foundry UserEntraToken connection
-│   │   ├── keyvault.bicep        # Key Vault + APIM RBAC access
-│   │   ├── cognitive.bicep       # AI Services, project, App Insights
-│   │   └── ...                   # Container Apps, registry, monitoring, storage
-│   └── policies/
-│       ├── sf-mcp-obo-policy.xml     # OBO three-phase exchange policy
-│       └── sf-mcp-obo-prm-policy.xml # RFC 9728 PRM for OBO endpoint
-├── hooks/
-│   └── postprovision.py          # Creates Entra app + Foundry agent + OBO connection
-├── scripts/                      # Setup and test scripts
-└── docs/                         # Architecture diagrams
-```
-
-### Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `setup-sf-org.py` | Consolidated SF org setup orchestrator: chains SSO, demo user, OBO service account |
-| `setup-sf-obo-eca.py` | Creates SF Connected App for JWT Bearer via Metadata API |
-| `set-sf-federation-id.py` | Sets FederationIdentifier on SF users (Azure AD `oid` → SF user) |
-| `setup-sf-demo-user.py` | Creates demo user + custom profile (no Account delete) + test data |
-| `setup-sf-service-account.py` | Creates dedicated OBO service account (Minimum Access profile + Permission Set) |
-| `test-salesforce-mcp.py` | 11-step end-to-end Salesforce MCP server validation |
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SF_INSTANCE_URL` | Yes | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
-| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
-| `SF_JWT_BEARER_CERT_THUMBPRINT` | Yes | Certificate thumbprint for JWT Bearer signing |
-| `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL user lookups |
-| `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
-| `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
-| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid naming conflicts |
-| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`) |
-
----
-
-## Setting Up Salesforce
-
-The OBO flow requires a Connected App with JWT Bearer flow, a certificate, and user-to-identity mapping.
-
-### Salesforce Side
-
-1. **Create a Connected App** with JWT Bearer flow enabled:
-   ```bash
-   python scripts/setup-sf-obo-eca.py --org <alias> --email <your-email> --cert certs/sf-jwt-bearer.crt
-   ```
-   This creates the Connected App via Metadata API, uploads the certificate, sets OAuth policies to "Admin approved users are pre-authorized", and creates a Permission Set (`MCP_OBO_Service_Account`) with minimal permissions (API Enabled + View All Users).
-
-2. **Create a dedicated service account** for SOQL user lookups:
-   ```bash
-   python scripts/setup-sf-service-account.py --org <alias> --email <your-email>
-   ```
-   This creates a user with the most restrictive profile (`Minimum Access - Salesforce`), assigns the `MCP_OBO_Service_Account` Permission Set, and pre-authorizes it for the Connected App. The service account does not need System Administrator — the Permission Set provides the required permissions.
-
-3. **Assign profiles.** Add the profiles of allowed users to the Connected App (via SetupEntityAccess API, handled by the setup-sf-obo-eca.py script).
-
-4. **Map users.** Set `FederationIdentifier` on each SF user to their Azure AD `oid`:
-   ```bash
-   python scripts/set-sf-federation-id.py
-   ```
-   The `oid` claim is immutable and consistent across all Azure AD applications for a given user.
-
-> **Why `oid` and not `sub`?** The `sub` claim is pairwise: it changes per app registration. `oid` is the same across all apps in the tenant, making it a stable identity anchor.
-
-### Azure Side
-
-1. **Upload the certificate** (PFX with private key) to Azure Key Vault as `sf-jwt-bearer`
-2. **APIM managed identity** must have "Key Vault Secrets User" RBAC role on the Key Vault (deployed automatically by Bicep)
-3. Set the certificate thumbprint:
-   ```bash
-   azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<thumbprint>"
-   ```
-
-### Deploy
-
-```bash
-azd up
-```
-
----
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| "Project not found" after `azd down` | Increment `COGNITIVE_ACCOUNT_SUFFIX` (e.g., `azd env set COGNITIVE_ACCOUNT_SUFFIX "2"`) and redeploy |
-| APIM breaks MCP streaming | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
-| Agent responds without calling tools | Connection misconfigured — check Foundry connection target URL |
-| 401 "Invalid Azure AD token" | Token issuer/audience mismatch. Check `validate-jwt` issuers include both v1 and v2 |
-| 502 "SF Service Token Failed" | Bad certificate, wrong client ID, or service account not pre-authorized. Verify `MCP_OBO_Service_Account` Permission Set is assigned |
-| 403 "User Not Mapped" | No SF user with matching FederationIdentifier. Run `set-sf-federation-id.py` |
-| 502 "SF Token Exchange Failed" | Target SF user not pre-authorized. Assign user's profile to the Connected App |
-| 500 (KeyNotFoundException) | Certificate thumbprint wrong or Named Value missing. Verify `SF_JWT_BEARER_CERT_THUMBPRINT` |
+> **Diagrams:** [Meta-Tool Pattern](docs/meta-tool-pattern.excalidraw) | [OBO Identity Propagation](docs/obo-identity-propagation.excalidraw)
 
 ---
 
@@ -330,7 +230,7 @@ The On-Behalf-Of (OBO) architecture is not locked to Azure AD. The `IdentityClai
 |---|---|---|
 | OIDC discovery URL | `sf-mcp-obo-policy.xml` | Point to PingFed, Okta, or other OIDC endpoint |
 | Issuer validation | `sf-mcp-obo-policy.xml` | Update to new issuer(s) |
-| Identity claim name | `IDENTITY_CLAIM_NAME` env var | `oid` → `sub` or a custom claim |
+| Identity claim name | `IDENTITY_CLAIM_NAME` env var | `oid` -> `sub` or a custom claim |
 | Audience | `sf-mcp-obo-policy.xml` | Match IdP configuration |
 | Foundry connection type | `sf-obo-connection.bicep` | `UserEntraToken` is Azure-only; other IdPs need `CustomKeys` |
 
@@ -350,11 +250,112 @@ This project is a proof of concept. Before using in production, consider:
 
 ---
 
+## Deployment and Setup
+
+### Prerequisites
+
+| Requirement | Version | Link |
+|-------------|---------|------|
+| Azure subscription | - | [Free trial](https://azure.microsoft.com/free/) |
+| Azure Developer CLI | 1.5+ | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
+| Python | 3.11+ | [python.org](https://www.python.org/) |
+| Docker Desktop | - | [docker.com](https://www.docker.com/products/docker-desktop/) |
+| Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
+
+### Deploy
+
+```bash
+git clone https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation.git
+cd salesforce-meta-tool-identity-propagation
+
+azd env new obo
+azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
+azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
+azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
+azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
+
+azd up
+```
+
+After `azd up` completes, open the Chat App at the URL printed at the end of deployment. Sign in with your Azure AD account and send a message (e.g., *"Show me my Salesforce accounts"*). OBO mode works immediately — no Salesforce consent required.
+
+### Salesforce Setup
+
+The OBO flow requires a Connected App with JWT Bearer flow, a certificate, and user-to-identity mapping.
+
+1. **Create a Connected App** with JWT Bearer flow enabled:
+   ```bash
+   python scripts/setup-sf-obo-eca.py --org <alias> --email <your-email> --cert certs/sf-jwt-bearer.crt
+   ```
+   This creates the Connected App via Metadata API, uploads the certificate, and sets OAuth policies to "Admin approved users are pre-authorized."
+
+2. **Create a dedicated service account** for SOQL user lookups:
+   ```bash
+   python scripts/setup-sf-service-account.py --org <alias> --email <your-email>
+   ```
+   Creates a user with `Minimum Access - Salesforce` profile, assigns the `MCP_OBO_Service_Account` Permission Set (API Enabled + View All Users), and pre-authorizes it for the Connected App.
+
+3. **Map users.** Set `FederationIdentifier` on each Salesforce user to their Azure AD `oid`:
+   ```bash
+   python scripts/set-sf-federation-id.py
+   ```
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SF_INSTANCE_URL` | Yes | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
+| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
+| `SF_JWT_BEARER_CERT_THUMBPRINT` | Yes | Certificate thumbprint for JWT Bearer signing |
+| `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL user lookups |
+| `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
+| `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
+| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid naming conflicts |
+| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`) |
+
+### Project Structure
+
+```
+salesforce-meta-tool-identity-propagation/
++-- azure.yaml                    # azd project: 2 services (chat-app, salesforce-mcp)
++-- src/
+|   +-- salesforce-mcp/
+|   |   +-- app.py                # The MCP server: 6 tools, bearer passthrough
+|   |   +-- salesforce_client.py  # Async Salesforce REST client with auth
+|   +-- chat-app/
+|       +-- app.py                # FastAPI backend, MSAL to Foundry agent bridge
+|       +-- static/               # Vanilla JS SPA with MSAL.js
++-- infra/
+|   +-- main.bicep                # Orchestrator, all Azure resources
+|   +-- modules/                  # APIM, Key Vault, Container Apps, AI Services, ...
+|   +-- policies/
+|       +-- sf-mcp-obo-policy.xml     # OBO three-phase exchange policy
+|       +-- sf-mcp-obo-prm-policy.xml # RFC 9728 PRM for OBO endpoint
++-- hooks/
+|   +-- postprovision.py          # Creates Entra app + Foundry agent + OBO connection
++-- scripts/                      # SF org setup, demo user, service account, e2e test
++-- docs/                         # Architecture diagrams (Excalidraw)
+```
+
+### Common Issues
+
+| Problem | Solution |
+|---------|----------|
+| "Project not found" after `azd down` | Increment `COGNITIVE_ACCOUNT_SUFFIX` and redeploy |
+| APIM breaks MCP streaming | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
+| Agent responds without calling tools | Check Foundry connection target URL |
+| 401 "Invalid Azure AD token" | Check `validate-jwt` issuers include both v1 and v2 |
+| 502 "SF Service Token Failed" | Bad certificate, wrong client ID, or service account not pre-authorized |
+| 403 "User Not Mapped" | No SF user with matching `FederationIdentifier`. Run `set-sf-federation-id.py` |
+| 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for the Connected App |
+
+---
+
 ## Contributing
 
 Contributions are welcome. Please open an [issue](https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/issues) or submit a pull request.
 
-This project uses `azd` for deployment. See [Quick Start](#quick-start) to get a local environment running.
+This project uses `azd` for deployment. See [Deploy](#deploy) to get a local environment running.
 
 ---
 
