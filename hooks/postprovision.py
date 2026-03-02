@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 import uuid
 
@@ -373,18 +374,33 @@ def create_agent():
         "Always confirm destructive actions with the user."
     )
 
-    agent = project_client.agents.create_version(
-        agent_name=agent_name,
-        definition=PromptAgentDefinition(
-            model="gpt-4o",
-            instructions=instructions,
-            tools=tools,
-        ),
-    )
-    print(f"Agent created: name={agent.name}, version={agent.version}, id={agent.id}")
-    print(f"  Tools: {len(tools)} MCP tool(s) configured")
-    print("\nOBO flow requires no consent. Send a chat message to test.")
-    print(f"Agent: {agent.name} v{agent.version}")
+    # Retry with backoff — after fresh deploy, the Foundry data plane
+    # takes 5-15 min to propagate. "Project not found" is transient.
+    max_retries = 6
+    retry_delay = 10
+    for attempt in range(max_retries):
+        try:
+            agent = project_client.agents.create_version(
+                agent_name=agent_name,
+                definition=PromptAgentDefinition(
+                    model="gpt-4o",
+                    instructions=instructions,
+                    tools=tools,
+                ),
+            )
+            print(f"Agent created: name={agent.name}, version={agent.version}, id={agent.id}")
+            print(f"  Tools: {len(tools)} MCP tool(s) configured")
+            print("\nOBO flow requires no consent. Send a chat message to test.")
+            print(f"Agent: {agent.name} v{agent.version}")
+            return
+        except Exception as e:
+            if "not found" in str(e).lower() and attempt < max_retries - 1:
+                print(f"  Attempt {attempt + 1}/{max_retries}: {e}")
+                print(f"  Retrying in {retry_delay}s (waiting for project propagation)...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+            else:
+                raise
 
 
 def main():
