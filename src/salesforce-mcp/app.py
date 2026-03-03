@@ -7,6 +7,8 @@ write, and approval tools via the Model Context Protocol (MCP).
 import json
 import logging
 import os
+import time
+from contextlib import asynccontextmanager
 
 import httpx
 
@@ -28,15 +30,26 @@ else:
 from mcp.server.fastmcp import FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from salesforce_client import SalesforceClient, _request_token
+
+log = logging.getLogger("salesforce_mcp")
 
 sf = SalesforceClient()
 
 port = int(os.environ.get("PORT", "8000"))
 
+
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    await sf.close()
+
+
 mcp = FastMCP(
     "Salesforce Meta Tool - MCP Server",
+    lifespan=lifespan,
     instructions="""\
 Salesforce MCP server — dynamically discovers objects and fields via Salesforce metadata APIs.
 
@@ -78,6 +91,11 @@ The Id field also works for upsert.
     host="0.0.0.0",
     port=port,
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    return JSONResponse({"status": "ok"})
 
 
 def _sf_error_response(e: httpx.HTTPStatusError) -> str:
@@ -130,6 +148,8 @@ async def list_objects(filter: str | None = None) -> str:
     Returns:
         JSON array (max 100) of objects with name, label, queryable, createable, updateable, deletable flags.
     """
+    log.info("tool=list_objects filter=%s", filter)
+    t0 = time.monotonic()
     try:
         objects = await sf.describe_global()
     except httpx.HTTPStatusError as e:
@@ -142,7 +162,9 @@ async def list_objects(filter: str | None = None) -> str:
             if f in o["name"].lower() or f in o["label"].lower()
         ]
 
-    return json.dumps(objects[:100], indent=2)
+    result = objects[:100]
+    log.info("tool=list_objects done count=%d elapsed=%.1fs", len(result), time.monotonic() - t0)
+    return json.dumps(result)
 
 
 @mcp.tool()
@@ -160,11 +182,14 @@ async def describe_object(object_name: str) -> str:
         JSON with object name, label, fields (name, label, type, required, externalId, picklistValues, referenceTo),
         and child relationships.
     """
+    log.info("tool=describe_object object=%s", object_name)
+    t0 = time.monotonic()
     try:
         result = await sf.describe_object(object_name)
     except httpx.HTTPStatusError as e:
         return _sf_error_response(e)
-    return json.dumps(result, indent=2)
+    log.info("tool=describe_object done elapsed=%.1fs", time.monotonic() - t0)
+    return json.dumps(result)
 
 
 @mcp.tool()
@@ -190,6 +215,8 @@ async def soql_query(query: str, max_records: int = 10000) -> str:
     Returns:
         JSON with totalSize, records array, and done flag. done is false if results were truncated by max_records.
     """
+    log.info("tool=soql_query max_records=%d", max_records)
+    t0 = time.monotonic()
     max_records = min(max_records, 50000)
     try:
         result = await sf.query(query)
@@ -204,14 +231,12 @@ async def soql_query(query: str, max_records: int = 10000) -> str:
 
     _clean_attributes(records)
 
-    return json.dumps(
-        {
-            "totalSize": total_size,
-            "records": records[:max_records],
-            "done": result.get("done", True) and len(records) <= max_records,
-        },
-        indent=2,
-    )
+    log.info("tool=soql_query done total=%d returned=%d elapsed=%.1fs", total_size, len(records[:max_records]), time.monotonic() - t0)
+    return json.dumps({
+        "totalSize": total_size,
+        "records": records[:max_records],
+        "done": result.get("done", True) and len(records) <= max_records,
+    })
 
 
 @mcp.tool()
@@ -237,6 +262,8 @@ async def search_records(
     Returns:
         JSON with searchRecords array containing matched records across objects.
     """
+    log.info("tool=search_records term=%s objects=%s", search_term, objects)
+    t0 = time.monotonic()
     limit = min(limit, 200)
 
     # Escape SOSL reserved characters (backslash first to avoid double-escaping)
@@ -256,7 +283,8 @@ async def search_records(
     records = result.get("searchRecords", [])
     _clean_attributes(records)
 
-    return json.dumps({"searchRecords": records}, indent=2)
+    log.info("tool=search_records done count=%d elapsed=%.1fs", len(records), time.monotonic() - t0)
+    return json.dumps({"searchRecords": records})
 
 
 @mcp.tool()
@@ -291,6 +319,8 @@ async def write_record(
     Returns:
         JSON with success flag and details (e.g., id for create, created flag for upsert).
     """
+    log.info("tool=write_record object=%s op=%s", object_name, operation)
+    t0 = time.monotonic()
     op = operation.lower()
     valid_ops = ("create", "update", "upsert", "delete")
     if op not in valid_ops:
@@ -369,7 +399,8 @@ async def write_record(
     except httpx.HTTPStatusError as e:
         return _sf_error_response(e)
 
-    return json.dumps(result, indent=2)
+    log.info("tool=write_record done elapsed=%.1fs", time.monotonic() - t0)
+    return json.dumps(result)
 
 
 @mcp.tool()
@@ -395,6 +426,8 @@ async def process_approval(
     Returns:
         JSON with success flag and approval result details.
     """
+    log.info("tool=process_approval action=%s record=%s", action, record_id)
+    t0 = time.monotonic()
     valid_actions = ("Submit", "Approve", "Reject")
     if action not in valid_actions:
         return json.dumps({
@@ -416,9 +449,10 @@ async def process_approval(
 
     # Flatten single-request response
     items = result.get("processResults", result.get("results", []))
+    log.info("tool=process_approval done elapsed=%.1fs", time.monotonic() - t0)
     if len(items) == 1:
-        return json.dumps(items[0], indent=2)
-    return json.dumps(result, indent=2)
+        return json.dumps(items[0])
+    return json.dumps(result)
 
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):

@@ -1,12 +1,9 @@
 """Salesforce REST API client with auth, describe, query, and CRUD operations."""
 
 import contextvars
-import http.server
 import os
-import threading
 import time
 import urllib.parse
-import webbrowser
 
 import httpx
 
@@ -77,6 +74,10 @@ class SalesforceClient:
 
     def _get_auth_code_via_browser(self) -> str:
         """Open browser for OAuth login, capture authorization code via local callback."""
+        import http.server
+        import threading
+        import webbrowser
+
         result = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -145,12 +146,19 @@ class SalesforceClient:
         except httpx.HTTPError:
             return False
 
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        """Make an authenticated request, auto-refreshing on 401."""
+    async def _request(
+        self, method: str, path: str, *, _absolute: bool = False, **kwargs
+    ) -> httpx.Response:
+        """Make an authenticated request, auto-refreshing on 401.
+
+        Args:
+            _absolute: When True, use instance_url + path instead of base_url + path.
+                       Used for pagination URLs that already include the API version.
+        """
         # Passthrough mode: use per-request token from middleware (no retry/refresh)
         passthrough_token = _request_token.get()
         if passthrough_token:
-            url = f"{self._base_url}{path}"
+            url = f"{self.instance_url}{path}" if _absolute else f"{self._base_url}{path}"
             headers = {"Authorization": f"Bearer {passthrough_token}"}
             resp = await self._client.request(method, url, headers=headers, **kwargs)
             resp.raise_for_status()
@@ -159,7 +167,7 @@ class SalesforceClient:
         if not self.access_token:
             await self.authenticate()
 
-        url = f"{self._base_url}{path}"
+        url = f"{self.instance_url}{path}" if _absolute else f"{self._base_url}{path}"
         headers = {"Authorization": f"Bearer {self.access_token}"}
 
         resp = await self._client.request(method, url, headers=headers, **kwargs)
@@ -257,25 +265,7 @@ class SalesforceClient:
             next_url: The nextRecordsUrl path from a previous query result
                 (e.g., /services/data/v62.0/query/01gxx...-2000).
         """
-        # Passthrough mode: use per-request token (no retry/refresh)
-        passthrough_token = _request_token.get()
-        if passthrough_token:
-            url = f"{self.instance_url}{next_url}"
-            headers = {"Authorization": f"Bearer {passthrough_token}"}
-            resp = await self._client.request("GET", url, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-
-        url = f"{self.instance_url}{next_url}"
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        resp = await self._client.request("GET", url, headers=headers)
-        if resp.status_code == 401:
-            self.access_token = None
-            if not await self._refresh_access_token():
-                await self.authenticate()
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-            resp = await self._client.request("GET", url, headers=headers)
-        resp.raise_for_status()
+        resp = await self._request("GET", next_url, _absolute=True)
         return resp.json()
 
     async def create_record(self, object_name: str, field_values: dict) -> dict:
