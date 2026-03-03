@@ -285,7 +285,7 @@ module keyvaultApimAccess 'modules/keyvault.bicep' = {
 // Must run AFTER keyvaultApimAccess so APIM has "Key Vault Secrets User" role.
 // ============================================================
 
-module apimJwtBearerCert 'modules/apim-jwt-bearer-cert.bicep' = {
+module apimJwtBearerCert 'modules/apim-jwt-bearer-cert.bicep' = if (!empty(sfJwtBearerCertThumbprint)) {
   name: 'apim-jwt-bearer-cert'
   scope: rg
   params: {

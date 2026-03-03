@@ -76,50 +76,55 @@ For detailed technical explanations, see [docs/deepdive.md](docs/deepdive.md):
 
 ## Deployment and Setup
 
+> **New to this project?** Follow the [step-by-step installation guide](docs/installation.md)
+> for a complete walkthrough from a clean Azure subscription and Salesforce org.
+
 ### Prerequisites
 
 | Requirement | Version | Link |
 |-------------|---------|------|
-| Azure subscription | - | [Free trial](https://azure.microsoft.com/free/) |
+| Azure subscription | Contributor + User Access Admin | [Free trial](https://azure.microsoft.com/free/) |
 | Azure Developer CLI | 1.5+ | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
+| Azure CLI | 2.60+ | [Install az](https://learn.microsoft.com/cli/azure/install-azure-cli) |
 | Python | 3.11+ | [python.org](https://www.python.org/) |
 | Docker Desktop | - | [docker.com](https://www.docker.com/products/docker-desktop/) |
+| Salesforce CLI | sf 2.x | [Install sf](https://developer.salesforce.com/tools/salesforcecli) |
+| OpenSSL | - | Pre-installed on macOS/Linux; [Git for Windows](https://gitforwindows.org/) includes it |
 | Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
 
-### Deploy
+### Quick Deploy
+
+If you already have a configured Salesforce org and certificate:
 
 ```bash
 git clone https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation.git
 cd salesforce-meta-tool-identity-propagation
+pip install -r requirements.txt
 
 azd env new obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
-azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
 azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 
 azd up
 ```
 
-After `azd up` completes, open the Chat App at the URL printed at the end of deployment. Sign in with your Azure AD account and send a message (e.g., *"Show me my Salesforce accounts"*). On-Behalf-Of (OBO) mode works immediately — no Salesforce consent required.
+The postprovision hook automatically uploads `certs/sf-jwt-bearer.pfx` to Key Vault, creates the APIM certificate binding, and sets `SF_JWT_BEARER_CERT_THUMBPRINT`. No manual thumbprint step needed.
 
-### Salesforce Setup
+After `azd up` completes, open the Chat App URL printed at the end. Sign in with your Azure AD account and send a message (e.g., *"Show me my Salesforce accounts"*).
 
-The On-Behalf-Of (OBO) flow requires a Connected App with JWT Bearer flow, a certificate, and user-to-identity mapping. A single script handles the complete setup:
+### From Scratch
 
-```bash
-python scripts/setup-sf-org.py --org <alias> --email <your-email> --cert certs/sf-jwt-bearer.crt
-```
-
-This runs 5 steps in sequence:
-
-1. **Connected App** (`eca`) — Deploys a Connected App via Metadata API with X.509 certificate, sets OAuth policies to "Admin approved users are pre-authorized", assigns profiles.
-2. **SSO Federation** (`sso`) — Creates an Entra App Registration and deploys an Auth Provider to Salesforce (interactive browser login).
-3. **Demo User** (`demo`) — Creates a custom "Standard User - No Delete" profile, a demo user, and sample test data.
-4. **Service Account** (`svcacct`) — Creates a user with `Minimum Access - Salesforce` profile, assigns the `MCP_OBO_Service_Account` Permission Set (API Enabled + View All Users), and pre-authorizes it for the Connected App.
-5. **Federation IDs** (`fedid`) — Sets `FederationIdentifier` on each Salesforce user to their Azure AD `oid`.
-
-Run individual steps with `--only eca`, skip steps with `--skip sso fedid`, or preview federation ID changes with `--only fedid --dry-run`.
+1. **Generate certificate** — see [installation guide Phase 1](docs/installation.md#phase-1-generate-x509-certificate)
+2. **Salesforce setup** — see [installation guide Phase 2](docs/installation.md#phase-2-salesforce-org-setup)
+3. **Set environment variables** (3 vars — no thumbprint needed):
+   ```bash
+   azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
+   azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
+   azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
+   ```
+4. **Deploy:** `azd up`
+5. **Map user identities** — see [installation guide Phase 4](docs/installation.md#phase-4-map-user-identities)
 
 ### Environment Variables
 
@@ -127,8 +132,8 @@ Run individual steps with `--only eca`, skip steps with `--skip sso fedid`, or p
 |----------|----------|-------------|
 | `SF_INSTANCE_URL` | Yes | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
 | `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
-| `SF_JWT_BEARER_CERT_THUMBPRINT` | Yes | Certificate thumbprint for JWT Bearer signing |
 | `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL user lookups |
+| `SF_JWT_BEARER_CERT_THUMBPRINT` | Auto | Auto-set by postprovision hook; only set manually if skipping cert upload |
 | `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
 | `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
 | `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid naming conflicts |
@@ -153,7 +158,7 @@ salesforce-meta-tool-identity-propagation/
 |       +-- sf-mcp-obo-policy.xml     # OBO three-phase exchange policy
 |       +-- sf-mcp-obo-prm-policy.xml # RFC 9728 PRM for OBO endpoint
 +-- hooks/
-|   +-- postprovision.py          # Creates Entra app + Foundry agent + On-Behalf-Of (OBO) connection
+|   +-- postprovision.py          # Cert upload + Entra app + Foundry agent + OBO connection
 +-- scripts/
 |   +-- sf_utils.py               # Shared SF/CLI primitives
 |   +-- setup-sf-org.py           # Complete 5-step SF org setup orchestrator
@@ -179,7 +184,7 @@ salesforce-meta-tool-identity-propagation/
 
 Contributions are welcome. Please open an [issue](https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/issues) or submit a pull request.
 
-This project uses `azd` for deployment. See [Deploy](#deploy) to get a local environment running.
+This project uses `azd` for deployment. See [Deployment and Setup](#deployment-and-setup) to get a local environment running.
 
 ---
 

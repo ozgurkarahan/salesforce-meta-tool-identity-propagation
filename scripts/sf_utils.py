@@ -159,6 +159,7 @@ def deploy_metadata(org: str, work_dir: str) -> bool:
 
 def sf_rest_post(
     instance_url: str, access_token: str, path: str, body: dict,
+    api_version: str = "v62.0",
 ) -> tuple[bool, dict | str]:
     """POST to the Salesforce REST API.
 
@@ -167,7 +168,7 @@ def sf_rest_post(
     (False, str(exception)) on other errors.
     """
     req = urllib.request.Request(
-        f"{instance_url}/services/data/v62.0{path}",
+        f"{instance_url}/services/data/{api_version}{path}",
         data=json.dumps(body).encode(),
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -187,12 +188,14 @@ def sf_rest_post(
 
 def create_setup_entity_access(
     instance_url: str, access_token: str, parent_id: str, entity_id: str,
+    api_version: str = "v62.0",
 ) -> bool:
     """Create a SetupEntityAccess record (idempotent -- handles DUPLICATE_VALUE)."""
     ok, result = sf_rest_post(
         instance_url, access_token,
         "/sobjects/SetupEntityAccess",
         {"ParentId": parent_id, "SetupEntityId": entity_id},
+        api_version=api_version,
     )
     if ok:
         return True

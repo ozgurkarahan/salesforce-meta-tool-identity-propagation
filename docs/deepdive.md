@@ -183,6 +183,105 @@ The MCP server and Salesforce Connected App configuration remain unchanged. Only
 
 ---
 
+## Chained Federation: Multi-IdP Scenarios
+
+In many enterprises, Salesforce SSO isn't federated directly with Entra ID. Instead, an SSO hub like PingFederate or Okta sits between them. This section explains how the identity propagation pattern works in those environments.
+
+### The Universal "Join Key" Concept
+
+Every IdP has a stable identifier that can serve as the join key to Salesforce's `FederationIdentifier` field:
+
+| IdP | Stable identifier | Typical value | Notes |
+|-----|-------------------|---------------|-------|
+| Entra ID | `oid` | `d178a230-d9c1-...` | Immutable across all apps in the tenant |
+| PingFederate | `NameID` (SAML) or `sub` (OIDC) | Configurable -- often UPN or employee ID | PingFed controls what gets emitted |
+| Okta | `externalId` / `sub` | `00u1abc...` or UPN | Depends on Okta Universal Directory config |
+| Salesforce | `FederationIdentifier` | Whatever the upstream IdP sends | Must be unique per org; matched during SSO |
+
+The principle is always the same: **one stable claim from the IdP must match one field in Salesforce**. The question is which claim, and whether it survives transformation through intermediate IdPs.
+
+### Pattern 1: Direct Federation
+
+One IdP federates directly with Salesforce. The identity claim flows straight through.
+
+```
+Entra ID --[SAML/OIDC]--> Salesforce
+  oid = "d178a230..."         FederationIdentifier = "d178a230..."
+```
+
+Whatever claim the IdP emits as `NameID` (SAML) or `sub` (OIDC) must match the SF user's `FederationIdentifier`. No transformation layer, no ambiguity.
+
+### Pattern 2: Chained Federation (SSO Hub)
+
+PingFederate (or Okta) acts as the SSO hub. Entra ID authenticates the user, but PingFed transforms claims before passing them to Salesforce.
+
+```
+Entra ID --[SAML]--> PingFederate --[SAML]--> Salesforce
+  oid: "d178a230..."    NameID: ???              FederationIdentifier: ???
+```
+
+PingFederate is a **claim transformation layer**. It receives claims from Entra ID and can:
+
+- **Pass through** the Entra `oid` as-is -- FederationIdentifier stores the oid
+- **Map** to a different attribute (email, employee ID, custom) -- FederationIdentifier stores that
+- **Enrich** from another source (LDAP, database lookup) -- FederationIdentifier stores the enriched value
+
+The admin configures this in PingFed's **Authentication Source Mapping > Attribute Contract Fulfillment**. Whatever PingFed puts in `SAML_SUBJECT` is what Salesforce matches against `FederationIdentifier`.
+
+### The FederationIdentifier Conflict
+
+When SSO and API access (OBO) use different IdP paths, the `FederationIdentifier` can only hold one value. This creates a conflict:
+
+| Path | Claim source | Claim value | FederationIdentifier must be... |
+|------|-------------|-------------|-------------------------------|
+| SSO (browser) | PingFed NameID | `EMP-12345` (employee ID) | `EMP-12345` |
+| OBO (API) | Entra ID oid | `d178a230-d9c1-...` | `d178a230-d9c1-...` |
+
+Both paths need to resolve to the same Salesforce user, but `FederationIdentifier` is a single field.
+
+### Three Solutions
+
+**Solution A -- Align on a common claim.** Configure PingFed to pass through the Entra ID `oid` unchanged. Both SSO and OBO use the same value. Simplest, but requires PingFed configuration change.
+
+**Solution B -- Custom Salesforce field.** Keep `FederationIdentifier` for SSO. Add a custom field (e.g., `EntraOid__c`) for OBO lookup. Change the APIM SOQL query to:
+
+```sql
+SELECT Username FROM User WHERE EntraOid__c = '{oid}' AND IsActive = true LIMIT 1
+```
+
+No PingFed change required, but adds a custom field to manage.
+
+**Solution C -- Match on shared attribute.** Use `email` or `upn` as the common anchor. Both PingFed and the OBO flow include email/UPN. Change the APIM policy to use `preferred_username` instead of `oid`:
+
+```
+IDENTITY_CLAIM_NAME = preferred_username
+```
+
+And match against the SF User's `Email` or `Username` field. Risk: email is mutable and less stable than `oid`.
+
+### Why OBO Bypasses SSO
+
+The three-phase OBO exchange in APIM does **not** use SSO federation at all. The JWT Bearer flow requires `sub` = Salesforce Username (not FederationIdentifier). The `FederationIdentifier` is only used as a SOQL lookup key to find the Username:
+
+```
+Azure AD oid --[SOQL lookup]--> SF Username --[JWT Bearer sub]--> SF Token
+```
+
+| Step | SSO (browser login) | OBO (this project) |
+|------|--------------------|--------------------|
+| Who issues the token? | PingFed (after delegating to Entra) | Entra ID directly (MSAL in chat app) |
+| What claim identifies the user? | PingFed's `NameID` | Entra `oid` |
+| What does SF match against? | `FederationIdentifier` | `FederationIdentifier` (via APIM SOQL) |
+| How does the user get a SF session? | SAML assertion | JWT Bearer (`sub` = Username) |
+
+This means:
+
+1. **SSO can use any IdP chain** (PingFed, Okta, direct) with any claim mapping
+2. **OBO is independent** -- it only needs `FederationIdentifier` (or a custom field) set to the Entra ID `oid`
+3. **No conflict** if Solution A or B is used -- SSO and OBO coexist as long as the lookup field is consistent
+
+---
+
 ## Current Scope and Limitations
 
 This project is a proof of concept. Before using in production, consider:
@@ -285,4 +384,62 @@ sequenceDiagram
     A->>A: replace Authorization header
     A->>MCP: request with user's SF token
     end
+```
+
+### Chained Federation SSO Flow
+
+> [Excalidraw source](diagrams/chained-federation-sso.excalidraw)
+
+```mermaid
+sequenceDiagram
+    actor User as Browser
+    participant Entra as Entra ID
+    participant Ping as PingFederate
+    participant SF as Salesforce
+
+    User->>Entra: authenticate (MSAL / redirect)
+    Entra-->>User: Entra token (oid, upn)
+
+    Note over User,Ping: SSO redirect chain
+    User->>Ping: SAML AuthnRequest
+    Ping->>Entra: validate token / fetch claims
+    Entra-->>Ping: oid="d178a230...", upn="user@corp.com"
+
+    rect rgb(255, 243, 191)
+    Note over Ping: Claim Transformation
+    Ping->>Ping: map oid → employee ID "EMP-12345"
+    end
+
+    Ping-->>User: SAML Response (NameID="EMP-12345")
+    User->>SF: SAML assertion
+    SF->>SF: match NameID → FederationIdentifier
+    SF-->>User: authenticated session
+```
+
+### Multi-IdP Identity Mapping
+
+> [Excalidraw source](diagrams/multi-idp-identity-mapping.excalidraw)
+
+```mermaid
+graph LR
+    subgraph "SSO Path (browser)"
+        A[Entra ID<br/>oid: d178a230] -->|SAML| B[PingFederate]
+        B -->|NameID: EMP-12345| C[Salesforce<br/>FederationIdentifier]
+    end
+
+    subgraph "OBO Path (API)"
+        D[Entra ID<br/>oid: d178a230] -->|oid claim| E[APIM]
+        E -->|SOQL: WHERE FedId = oid| F[SF Username]
+        F -->|JWT Bearer sub| G[SF Token]
+    end
+
+    C -.->|"must match<br/>PingFed NameID"| H{FederationIdentifier<br/>= EMP-12345}
+    E -.->|"must match<br/>Entra oid"| I{FederationIdentifier<br/>= d178a230}
+
+    H -.- J["Conflict! Single field,<br/>two different values"]
+    I -.- J
+
+    style J fill:#ffc9c9,stroke:#ef4444,color:#1e1e1e
+    style B fill:#fff3bf,stroke:#f59e0b,color:#1e1e1e
+    style E fill:#ffd8a8,stroke:#f59e0b,color:#1e1e1e
 ```

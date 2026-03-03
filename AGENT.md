@@ -57,9 +57,9 @@ The `salesforce-obo` connection stores **no credentials**. It's a configuration 
 azd env new obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
-azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<certificate-thumbprint>"
 azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 azd up
+# Postprovision hook uploads certs/sf-jwt-bearer.pfx to KV and sets SF_JWT_BEARER_CERT_THUMBPRINT
 ```
 
 ### Environment Variables
@@ -68,8 +68,8 @@ azd up
 |----------|----------|-------------|
 | `SF_INSTANCE_URL` | Yes | SF org My Domain URL |
 | `SF_CONNECTED_APP_CLIENT_ID` | Yes | Connected App consumer key |
-| `SF_JWT_BEARER_CERT_THUMBPRINT` | Yes | Certificate thumbprint for APIM policy |
 | `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL lookups |
+| `SF_JWT_BEARER_CERT_THUMBPRINT` | Auto | Auto-set by postprovision hook from KV cert |
 | `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
 | `IDENTITY_CLAIM_NAME` | No | JWT claim for user identity (default: `oid`) |
 
@@ -91,7 +91,7 @@ azd up
 - `src/chat-app/` — FastAPI + MSAL.js frontend
 
 **Hooks & Scripts:**
-- `hooks/postprovision.py` — Entra app + Foundry Agent + OBO connection setup
+- `hooks/postprovision.py` — Cert upload + Entra app + Foundry Agent + OBO connection setup
 - `scripts/sf_utils.py` — Shared SF/CLI primitives (run, SOQL, metadata deploy, REST helpers)
 - `scripts/setup-sf-org.py` — Complete 5-step SF org setup orchestrator (Connected App, SSO, Demo User, Service Account, Federation IDs)
 - `scripts/test-salesforce-mcp.py` — E2E MCP server test
@@ -114,9 +114,9 @@ The 5 steps (run individually with `--only <step>`):
 After setup, import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bearer`.
 
 ### OBO Prerequisites (Azure side)
-1. Key Vault with PFX certificate uploaded
-2. APIM managed identity with "Key Vault Secrets User" RBAC role on the Key Vault
-3. Certificate thumbprint set in `SF_JWT_BEARER_CERT_THUMBPRINT` env var
+1. `certs/sf-jwt-bearer.pfx` exists locally (postprovision hook uploads to KV automatically)
+2. APIM managed identity with "Key Vault Secrets User" RBAC role on KV (Bicep handles this)
+3. `SF_JWT_BEARER_CERT_THUMBPRINT` auto-set by postprovision hook (or set manually)
 
 ### IdP Flexibility
 
@@ -136,7 +136,7 @@ The `IdentityClaimName` Named Value (default: `oid`) controls which JWT claim is
 |---|---|---|
 | 401 "Invalid Azure AD token" | Token issuer/audience mismatch | Check `validate-jwt` issuers include both v1 and v2 |
 | 502 "SF Service Token Failed" | Bad cert, wrong client ID, or service account not pre-authorized | Verify cert thumbprint, client ID, and `MCP_OBO_Service_Account` Permission Set assignment |
-| 403 "User Not Mapped" | No SF user with matching FederationIdentifier | Run `set-sf-federation-id.py` for the user |
+| 403 "User Not Mapped" | No SF user with matching FederationIdentifier | Run `setup-sf-org.py --only fedid` |
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for the Connected App | Assign user's profile to the Connected App via SetupEntityAccess |
 | 500 (KeyNotFoundException) | Certificate thumbprint wrong or missing Named Value | Verify `SF_JWT_BEARER_CERT_THUMBPRINT` matches actual cert |
 | "Missing required query parameter: audience" | `audience` missing on Foundry connection | Add `audience: 'https://ai.azure.com'` to connection properties |

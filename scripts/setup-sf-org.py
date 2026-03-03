@@ -217,6 +217,7 @@ def _assign_profiles_to_app(org: str, app_name: str,
 
         ok = create_setup_entity_access(
             instance_url, access_token, ps_records[0]["Id"], connected_app_id,
+            api_version="v66.0",
         )
         if ok:
             print(f"  Assigned: {profile_name}")

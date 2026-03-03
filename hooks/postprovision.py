@@ -1,11 +1,11 @@
-"""Post-provision hook: create Entra app + configure auth + create Foundry agent.
+"""Post-provision hook: upload cert, create Entra app, configure auth, create Foundry agent.
 
 After Bicep deploys Azure resources, this hook:
+0. Uploads SF JWT Bearer cert to Key Vault + creates APIM cert binding (if cert exists locally)
 1. Creates Chat App Entra app registration (az CLI — delegated permissions)
 2. Creates the Foundry agent with Salesforce MCP tool (OBO connection)
 3. Updates Chat App Container App env vars
 4. Recreates OBO connection via ARM REST + updates APIM Named Values
-5. Updates APIM SfInstanceUrl Named Value (if SF_INSTANCE_URL is set)
 
 Uses az CLI for Entra ops because the Graph Bicep extension requires
 Application.ReadWrite.All on the ARM deployment identity, which is not
@@ -72,6 +72,184 @@ def _graph_patch(object_id: str, body: dict):
             f'--body "@{body_file}"',
             parse_json=True,
         )
+    finally:
+        os.unlink(body_file)
+
+
+def upload_cert_and_configure_apim():
+    """Upload SF JWT Bearer cert to Key Vault and create APIM cert binding.
+
+    On first deploy the cert isn't in KV yet (Bicep skips the cert module when
+    SF_JWT_BEARER_CERT_THUMBPRINT is empty). This function:
+    1. Checks for local cert at certs/sf-jwt-bearer.pfx
+    2. Assigns deployer Key Vault Certificates Officer role (idempotent)
+    3. Imports cert into Key Vault (with retry for RBAC propagation)
+    4. Reads thumbprint and persists via azd env set
+    5. Creates APIM cert binding via ARM REST
+    6. Updates APIM Named Value SfJwtBearerCertThumbprint
+    """
+    cert_path = os.path.join(os.getcwd(), "certs", "sf-jwt-bearer.pfx")
+    if not os.path.exists(cert_path):
+        print("  No local cert found at certs/sf-jwt-bearer.pfx — skipping")
+        print("  Generate with: openssl req -x509 -nodes -days 365 ...")
+        print("  See docs/installation.md for details")
+        return
+
+    kv_name = os.environ.get("KEY_VAULT_NAME", "")
+    if not kv_name:
+        print("  WARNING: KEY_VAULT_NAME not set — skipping cert upload")
+        return
+
+    cert_name = os.environ.get("SF_JWT_BEARER_CERT_NAME", "sf-jwt-bearer")
+
+    # Check if cert already exists in KV
+    thumbprint = run(
+        f'az keyvault certificate show --vault-name {kv_name} '
+        f'--name {cert_name} --query x509ThumbprintHex -o tsv'
+    )
+
+    if thumbprint:
+        print(f"  Certificate already in Key Vault (thumbprint: {thumbprint})")
+    else:
+        # Assign deployer Key Vault Certificates Officer role
+        deployer_oid = run('az ad signed-in-user show --query id -o tsv')
+        if not deployer_oid:
+            print("  WARNING: Could not get deployer OID — skipping cert upload")
+            return
+
+        sub_id = run("az account show --query id -o tsv")
+        rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
+        kv_resource_id = (
+            f"/subscriptions/{sub_id}/resourceGroups/{rg}"
+            f"/providers/Microsoft.KeyVault/vaults/{kv_name}"
+        )
+        role_def_id = "a4417e6f-fecd-4de8-b567-7b0420556985"  # Key Vault Certificates Officer
+        # Deterministic assignment name for idempotency
+        assignment_name = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{kv_resource_id}/{deployer_oid}/{role_def_id}"))
+
+        role_url = (
+            f"https://management.azure.com{kv_resource_id}"
+            f"/providers/Microsoft.Authorization/roleAssignments/{assignment_name}"
+            f"?api-version=2022-04-01"
+        )
+        role_body = {
+            "properties": {
+                "roleDefinitionId": f"/subscriptions/{sub_id}/providers/Microsoft.Authorization/roleDefinitions/{role_def_id}",
+                "principalId": deployer_oid,
+                "principalType": "User",
+            }
+        }
+        body_file = _write_temp_json(role_body)
+        try:
+            print(f"  Assigning Key Vault Certificates Officer to deployer...")
+            run(
+                f'az rest --method PUT --url "{role_url}" '
+                f'--headers "Content-Type=application/json" '
+                f'--body "@{body_file}"',
+                parse_json=True,
+            )
+        finally:
+            os.unlink(body_file)
+
+        # Import cert with retry (RBAC propagation can take ~30s)
+        max_retries = 6
+        retry_delay = 10
+        for attempt in range(max_retries):
+            result = run(
+                f'az keyvault certificate import --vault-name {kv_name} '
+                f'--name {cert_name} --file "{cert_path}" --password ""'
+            )
+            if result is not None:
+                print(f"  Certificate imported to Key Vault")
+                break
+            if attempt < max_retries - 1:
+                print(f"  Attempt {attempt + 1}/{max_retries}: RBAC not yet propagated, retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+            else:
+                print("  ERROR: Failed to import certificate after retries")
+                return
+
+        # Read thumbprint
+        thumbprint = run(
+            f'az keyvault certificate show --vault-name {kv_name} '
+            f'--name {cert_name} --query x509ThumbprintHex -o tsv'
+        )
+        if not thumbprint:
+            print("  ERROR: Could not read certificate thumbprint from Key Vault")
+            return
+
+    # Persist thumbprint for future azd up runs
+    azd_env_set("SF_JWT_BEARER_CERT_THUMBPRINT", thumbprint)
+
+    # Create APIM cert binding via ARM REST
+    sub_id = run("az account show --query id -o tsv")
+    rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
+    apim_name = os.environ.get("APIM_NAME", "")
+    kv_uri = f"https://{kv_name}.vault.azure.net/"
+
+    if not apim_name:
+        print("  WARNING: APIM_NAME not set — skipping APIM cert binding")
+        return
+
+    cert_url = (
+        f"https://management.azure.com/subscriptions/{sub_id}"
+        f"/resourceGroups/{rg}"
+        f"/providers/Microsoft.ApiManagement/service/{apim_name}"
+        f"/certificates/{cert_name}"
+        f"?api-version=2024-06-01-preview"
+    )
+    cert_body = {
+        "properties": {
+            "keyVault": {
+                "secretIdentifier": f"{kv_uri}secrets/{cert_name}",
+            }
+        }
+    }
+    body_file = _write_temp_json(cert_body)
+    try:
+        print(f"  Creating APIM certificate binding '{cert_name}'...")
+        result = run(
+            f'az rest --method PUT --url "{cert_url}" '
+            f'--headers "Content-Type=application/json" '
+            f'--body "@{body_file}"',
+            parse_json=True,
+        )
+        if result:
+            print("  APIM certificate binding created")
+        else:
+            print("  WARNING: Failed to create APIM certificate binding")
+    finally:
+        os.unlink(body_file)
+
+    # Update APIM Named Value for thumbprint
+    nv_url = (
+        f"https://management.azure.com/subscriptions/{sub_id}"
+        f"/resourceGroups/{rg}"
+        f"/providers/Microsoft.ApiManagement/service/{apim_name}"
+        f"/namedValues/SfJwtBearerCertThumbprint"
+        f"?api-version=2024-06-01-preview"
+    )
+    nv_body = {
+        "properties": {
+            "displayName": "SfJwtBearerCertThumbprint",
+            "value": thumbprint,
+            "secret": False,
+        }
+    }
+    body_file = _write_temp_json(nv_body)
+    try:
+        print(f"  Updating APIM Named Value 'SfJwtBearerCertThumbprint'...")
+        result = run(
+            f'az rest --method PUT --url "{nv_url}" '
+            f'--headers "Content-Type=application/json" '
+            f'--body "@{body_file}"',
+            parse_json=True,
+        )
+        if result:
+            print(f"  SfJwtBearerCertThumbprint = {thumbprint}")
+        else:
+            print("  WARNING: Failed to update SfJwtBearerCertThumbprint Named Value")
     finally:
         os.unlink(body_file)
 
@@ -406,8 +584,16 @@ def create_agent():
 def main():
     print("=== Post-provision hook (OBO) ===\n")
 
+    # Step 0: Upload cert to Key Vault + configure APIM cert binding
+    print("--- Step 0: Certificate upload + APIM binding ---")
+    try:
+        upload_cert_and_configure_apim()
+    except Exception as e:
+        print(f"\nWARNING: Certificate upload failed (non-fatal): {e}")
+        traceback.print_exc()
+
     # Step 1: Create Chat App Entra registration
-    print("--- Step 1: Chat App Entra registration ---")
+    print("\n--- Step 1: Chat App Entra registration ---")
     try:
         create_chat_app_entra_registration()
     except Exception as e:
