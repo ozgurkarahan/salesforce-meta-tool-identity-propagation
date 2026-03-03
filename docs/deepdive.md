@@ -1,0 +1,288 @@
+# Deep Dive
+
+Detailed technical content for the [Salesforce Meta-Tool: Identity Propagation](../README.md) project.
+
+---
+
+## The Meta-Tool Pattern
+
+Most Salesforce MCP servers define one tool per object (`get_accounts`, `get_opportunities`, ...). That approach doesn't scale: an org with 100 custom objects needs 100 tools.
+
+This project uses a different pattern, borrowed from how Claude Code works:
+
+```
+Developer World                    Enterprise World
+-----------------                  -----------------
+Bash (meta-tool)          ->       Salesforce MCP Server (meta-tool)
+  +- git, npm, docker                +- list, describe, query, search, write, approve
+     kubectl, terraform                 covers any object, any field, any workflow
+```
+
+**Bash doesn't implement git.** It delegates to git. The agent builds the command.
+**This MCP server doesn't implement CRM logic.** It delegates to Salesforce. The agent builds the query.
+
+### How the Agent Thinks
+
+The user asks: *"Show me my open opportunities worth over $100k"*
+
+1. **Discover.** `list_objects(filter="Opportunity")` — finds the object and its CRUD flags.
+2. **Learn.** `describe_object("Opportunity")` — gets every field: `Name`, `Amount`, `StageName` (with picklist values), `IsClosed`, and 60+ more.
+3. **Query.** Builds SOQL from the schema:
+   ```sql
+   SELECT Name, Amount, StageName, CloseDate, Account.Name
+   FROM Opportunity
+   WHERE Amount > 100000 AND IsClosed = false
+   ORDER BY Amount DESC
+   ```
+4. **Execute.** `soql_query(...)` returns *the user's own data*, filtered by their sharing rules and field-level security. A sales rep sees their pipeline. A VP sees the full forecast. Same query, different results.
+
+### Why This Scales
+
+The tool surface is **fixed**: six tools, 1,235 tokens. Whether the org has 50 objects or 5,000, the MCP server definition doesn't change.
+
+| Approach | Token cost | Coverage |
+|----------|------------|----------|
+| Full OpenAPI spec | 5,000-15,000 | Hundreds of endpoints, most irrelevant |
+| RAG documentation chunks | 2,000-10,000 | Partial, depends on retrieval quality |
+| One tool per object | ~500 x N objects | Scales linearly, N can be 100+ |
+| **This MCP server** | **1,235 fixed** | **All objects, all fields, all operations** |
+
+---
+
+## Tool Reference
+
+**`list_objects`**: Entry point. Filters by name or label to find the right object among 1,000+. Returns name, label, and CRUD capability flags. Think `ls`.
+
+**`describe_object`**: Schema inspector. Returns every field with its API name, data type, required flag, picklist values, relationships, and external ID flags. The agent calls this *before* writing. Think `man`.
+
+**`soql_query`**: Precision read tool. Supports the full SOQL syntax: relationship queries, aggregates, `GROUP BY`, `HAVING`, date functions, subqueries. Auto-paginates at Salesforce's 2,000-record limit. Think `SQL`.
+
+**`search_records`**: Discovery tool. SOSL full-text search across multiple objects simultaneously, useful when the agent doesn't know *which* object contains the data. Think `rg`.
+
+**`write_record`**: Mutation tool. Four operations: `create`, `update`, `upsert` (by external ID), `delete`. Validates field names against the schema before calling the API, catches typos before they reach Salesforce. Think `echo >` or `rm`.
+
+**`process_approval`**: Workflow tool. Submit records for approval, approve or reject pending work items. Integrates with Salesforce's built-in approval workflows. Think `git push`, a governed state transition.
+
+---
+
+## Identity Propagation: End-to-End
+
+### The Problem
+
+The most common enterprise MCP pattern connects via a service account:
+
+```
+User -> Agent -> Service Account -> Salesforce
+                      ^
+          Admin access. Sees ALL data. Bypasses sharing rules.
+          "List all opportunities" returns the entire pipeline.
+```
+
+This project propagates the user's own identity through every layer. The Salesforce API enforces the same CRUD permissions, field-level security, sharing rules, and approval workflows that apply when the user logs into the Salesforce UI directly.
+
+**The agent becomes a power tool, not a privileged backdoor.**
+
+### Architecture
+
+```
+User (browser)
+  |
+  +-[MSAL.js]--> Azure AD --> token(aud=AzureML, appid=ChatApp)
+  |                                |
+  |                                v
+  +--------------------------> AI Foundry (Responses API)
+                                   |
+                                   +-[UserEntraToken]--> Azure AD --> token(aud=MCP-Gateway)
+                                   |                                        |
+                                   |                                        v
+                                   +--------------------------------------> APIM (validate-jwt)
+                                                                           |
+                                                                     [Three-phase exchange]
+                                                                           |
+                                                                           v
+                                                                     SF MCP Server
+                                                                           |
+                                                                           v
+                                                                     Salesforce API
+```
+
+### Every Hop, Every Token
+
+Here is what happens when a user sends a message, traced through every authentication boundary:
+
+**1. User signs in.** MSAL.js acquires an Azure AD token (`aud=AzureML`, claims include `oid` and `upn`). The `oid` (object ID) is the user's immutable identity across all Azure AD apps in the tenant.
+
+**2. Chat App forwards to AI Foundry.** The Chat App passes the user's token to AI Foundry via `UserTokenCredential`. Foundry preserves the user's identity (`oid`, `upn`) through its internal OBO-like exchange.
+
+**3. Foundry acquires an APIM-audience token.** Foundry's OAuth client acquires a separate token scoped to the MCP Gateway audience (`aud=https://ai.azure.com`). The user's `oid` and `upn` claims are carried forward.
+
+**4. APIM validates the Azure AD JWT.** The `validate-jwt` policy checks the token against both v1 (`sts.windows.net`) and v2 (`login.microsoftonline.com`) issuers and the expected audience. The user's `oid` is extracted.
+
+**5. APIM resolves the Salesforce username.** APIM checks its cache for `sf-username-{oid}`. On miss: a service account token runs `SELECT Username FROM User WHERE FederationIdentifier = '{oid}'` against Salesforce. The result is cached for 1 hour.
+
+> **Why `oid` and not `sub`?** The `sub` claim is pairwise: it changes per app registration. `oid` is the same across all apps in the tenant, making it a stable identity anchor for the `FederationIdentifier` mapping.
+
+**6. APIM gets the user's Salesforce token.** APIM checks its cache for `sf-token-{username}`. On miss: it creates a JWT Bearer assertion with `sub` = the Salesforce username, signs it with a Key Vault certificate, and exchanges it at the Salesforce token endpoint. The result is cached for 30 minutes.
+
+**7. APIM forwards with the Salesforce token.** The original `Authorization` header is replaced with the user's Salesforce access token. The request continues to the MCP backend.
+
+**8. MCP server extracts the token.** The entire identity propagation logic on the MCP side is seven lines:
+
+```python
+class BearerTokenMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        auth = request.headers.get("authorization", "")
+        token = auth[7:] if auth.lower().startswith("bearer ") else None
+        tok = _request_token.set(token)
+        try:
+            return await call_next(request)
+        finally:
+            _request_token.reset(tok)
+```
+
+**9. Salesforce enforces the user's own permissions.** Every API call runs as the mapped user. CRUD permissions, field-level security, sharing rules, and approval workflows all apply. A sales rep sees their pipeline. An admin sees everything. Same MCP server, different results.
+
+### Caching and Performance
+
+Three cache layers keep warm requests at ~0ms overhead:
+
+| Cache key | TTL | What it stores |
+|-----------|-----|---------------|
+| `sf-service-token` | 30 min | Service account token for SOQL user lookups |
+| `sf-username-{oid}` | 1 hour | Azure AD `oid` -> Salesforce username mapping |
+| `sf-token-{username}` | 30 min | Per-user Salesforce access token |
+
+On a 401 from Salesforce, APIM automatically evicts the cached user token. The next request re-exchanges transparently.
+
+### Key Guarantees
+
+- **No token stored.** The MCP server never persists, caches, or refreshes tokens. It reads the `Authorization` header and forwards it. Stateless.
+- **No scope escalation.** The Salesforce token is scoped to the mapped user. APIM cannot mint a token with broader permissions than the user has in Salesforce.
+- **Per-user audit trail.** Every Salesforce API call is logged under the user's own identity. The admin audit log shows *who* did *what*, not "the service account did everything."
+- **Stateless MCP server.** No session state, no token cache, no user database. The server can be replaced, scaled, or restarted without affecting any user's session.
+
+### What It Does Not Protect Against
+
+Identity propagation prevents privilege escalation: the agent can't do more than the user. It does not prevent the agent from misunderstanding intent. For production use, treat destructive operations with the same care you'd apply to any irreversible action: confirmation prompts, audit logging, and appropriate permission scoping in Salesforce.
+
+---
+
+## IdP Flexibility
+
+The On-Behalf-Of (OBO) architecture is not locked to Azure AD. The `IdentityClaimName` Named Value (default: `oid`) controls which JWT claim is used for user identity. To switch to another IdP:
+
+| What changes | Where | Notes |
+|---|---|---|
+| OIDC discovery URL | `sf-mcp-obo-policy.xml` | Point to PingFed, Okta, or other OIDC endpoint |
+| Issuer validation | `sf-mcp-obo-policy.xml` | Update to new issuer(s) |
+| Identity claim name | `IDENTITY_CLAIM_NAME` env var | `oid` -> `sub` or a custom claim |
+| Audience | `sf-mcp-obo-policy.xml` | Match IdP configuration |
+| Foundry connection type | `sf-obo-connection.bicep` | `UserEntraToken` is Azure-only; other IdPs need `CustomKeys` |
+
+The MCP server and Salesforce Connected App configuration remain unchanged. Only the APIM policy and Foundry connection need updating.
+
+---
+
+## Current Scope and Limitations
+
+This project is a proof of concept. Before using in production, consider:
+
+- **Destructive operations**: There are no confirmation prompts or audit logs on `write_record` delete operations. Add guardrails appropriate to your org's governance requirements.
+- **Token expiry mid-workflow**: APIM caches tokens for 30 minutes and auto-evicts on 401. Long-running workflows may need to retry.
+- **Certificate rotation**: The Key Vault certificate used for JWT Bearer signing has a default expiry of 365 days. Plan for rotation.
+- **Azure-specific infrastructure**: The deployment stack (APIM, AI Foundry, Container Apps) is Azure-native. Adapting this pattern to other clouds or self-hosted models requires replacing the infrastructure layer, though the [IdP flexibility](#idp-flexibility) section shows the authentication layer is modular.
+- **Rate limits**: The Salesforce REST API has per-org API call limits. High-frequency agentic workflows should account for this.
+
+---
+
+## Diagram Sources
+
+### Message Flow
+
+> [Excalidraw source](diagrams/message-flow-sequence.excalidraw)
+
+```mermaid
+sequenceDiagram
+    actor User as Browser
+    participant Chat as Chat App
+    participant AI as AI Foundry
+    participant APIM
+    participant MCP as MCP Server
+    participant SF as Salesforce
+
+    User->>Chat: "Show me my open opps over $100k"
+    Chat->>AI: Responses API (MSAL token)
+
+    Note over AI: Discover
+    AI->>APIM: list_objects("Opportunity")
+    APIM->>MCP: OBO token exchange
+    MCP->>SF: describeGlobal()
+    SF-->>MCP: object list
+    MCP-->>AI: objects found
+
+    Note over AI: Learn
+    AI->>APIM: describe_object("Opportunity")
+    APIM->>MCP: cached token
+    MCP->>SF: describe("Opportunity")
+    SF-->>MCP: field schema
+    MCP-->>AI: schema returned
+
+    Note over AI: Query
+    AI->>APIM: soql_query(...)
+    APIM->>MCP: cached token
+    MCP->>SF: SELECT Name, Amount, ...
+    SF-->>MCP: user's own data
+    MCP-->>AI: query results
+
+    AI-->>Chat: streamed response
+    Chat-->>User: "Here are your open opps..."
+```
+
+### OBO Token Exchange (detailed)
+
+> [Excalidraw source](diagrams/obo-token-exchange.excalidraw)
+
+```mermaid
+sequenceDiagram
+    participant F as AI Foundry
+    participant A as APIM
+    participant C as Cache
+    participant KV as Key Vault
+    participant SF as Salesforce
+    participant MCP as MCP Server
+
+    F->>A: tool call + Azure AD JWT
+
+    rect rgb(255, 243, 191)
+    Note over A: Phase 0 — Validate JWT
+    A->>A: check iss, aud, extract oid
+    end
+
+    rect rgb(255, 243, 191)
+    Note over A,SF: Phase 1 — Resolve SF Username
+    A->>C: lookup sf-username-{oid}
+    C-->>A: MISS
+    A->>KV: sign JWT (sub=svc account)
+    A->>SF: JWT Bearer grant
+    SF-->>A: service token
+    A->>SF: SOQL: Username WHERE FedId = oid
+    SF-->>A: username
+    A->>C: store sf-username-{oid} (1h TTL)
+    end
+
+    rect rgb(255, 243, 191)
+    Note over A,SF: Phase 2 — Get User SF Token
+    A->>C: lookup sf-token-{username}
+    C-->>A: MISS
+    A->>KV: sign JWT (sub=user)
+    A->>SF: JWT Bearer grant
+    SF-->>A: user access token
+    A->>C: store sf-token-{user} (30m TTL)
+    end
+
+    rect rgb(211, 249, 216)
+    Note over A,MCP: Phase 3 — Forward
+    A->>A: replace Authorization header
+    A->>MCP: request with user's SF token
+    end
+```

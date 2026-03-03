@@ -92,20 +92,26 @@ azd up
 
 **Hooks & Scripts:**
 - `hooks/postprovision.py` — Entra app + Foundry Agent + OBO connection setup
-- `scripts/setup-sf-obo-eca.py` — Create SF Connected App for JWT Bearer via Metadata API
-- `scripts/set-sf-federation-id.py` — Set FederationIdentifier on SF users
-- `scripts/setup-sf-org.py` — Consolidated SF org setup orchestrator
-- `scripts/setup-sf-demo-user.py` — Demo user + custom profile + test data
-- `scripts/setup-sf-service-account.py` — Dedicated OBO service account (Minimum Access profile + Permission Set)
+- `scripts/sf_utils.py` — Shared SF/CLI primitives (run, SOQL, metadata deploy, REST helpers)
+- `scripts/setup-sf-org.py` — Complete 5-step SF org setup orchestrator (Connected App, SSO, Demo User, Service Account, Federation IDs)
+- `scripts/test-salesforce-mcp.py` — E2E MCP server test
 
 ### OBO Prerequisites (Salesforce side)
-1. Create Connected App with JWT Bearer flow enabled (`scripts/setup-sf-obo-eca.py`)
-2. Upload X.509 certificate (public key) to the Connected App (UI-only for PKCE; metadata for cert)
-3. Set OAuth Policies → "Admin approved users are pre-authorized" (via SetupEntityAccess API)
-4. Assign profiles for allowed users
-5. Create dedicated service account (`scripts/setup-sf-service-account.py`) — creates user with Minimum Access profile, assigns `MCP_OBO_Service_Account` Permission Set (ApiEnabled + ViewAllUsers), pre-authorizes for Connected App
-6. Set FederationIdentifier on each SF user = their Azure AD `oid` (`scripts/set-sf-federation-id.py`)
-7. Import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bearer`
+
+All SF setup is handled by `scripts/setup-sf-org.py`:
+
+```bash
+python scripts/setup-sf-org.py --org <alias> --email <email> --cert certs/sf-jwt-bearer.crt
+```
+
+The 5 steps (run individually with `--only <step>`):
+1. **eca** — Create Connected App with JWT Bearer flow + X.509 certificate + profile pre-authorization
+2. **sso** — Entra App Registration + SF Auth Provider (interactive browser login)
+3. **demo** — Custom "Standard User - No Delete" profile + demo user + test data
+4. **svcacct** — Service account with Minimum Access profile + `MCP_OBO_Service_Account` Permission Set
+5. **fedid** — Set FederationIdentifier on SF users from Azure AD `oid`
+
+After setup, import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bearer`.
 
 ### OBO Prerequisites (Azure side)
 1. Key Vault with PFX certificate uploaded
@@ -137,5 +143,16 @@ The `IdentityClaimName` Named Value (default: `oid`) controls which JWT claim is
 
 ### SF Org Setup (after new Dev Trial)
 ```bash
-python scripts/setup-sf-org.py --org <alias> --email <admin-email>
+# Full 5-step setup
+python scripts/setup-sf-org.py --org <alias> --email <admin-email> --cert certs/sf-jwt-bearer.crt
+
+# Run specific steps
+python scripts/setup-sf-org.py --org <alias> --email <email> --only eca demo
+python scripts/setup-sf-org.py --org <alias> --email <email> --skip sso fedid
+
+# Federation IDs (dry run)
+python scripts/setup-sf-org.py --org <alias> --email <email> --only fedid --dry-run
+
+# Cleanup (deactivate demo/svc users, delete test data)
+python scripts/setup-sf-org.py --org <alias> --email <email> --cleanup
 ```
