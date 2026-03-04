@@ -19,6 +19,12 @@
         <div class="welcome" id="welcome">
             <h2>Salesforce Agent</h2>
             <p>Sign in with your Microsoft account and ask the agent about your Salesforce data. Your identity propagates end-to-end through the AI agent to Salesforce.</p>
+            <div class="suggestions" id="suggestions" style="display: none;">
+                <button class="suggestion-chip" onclick="useSuggestion(this.textContent)">List my Salesforce accounts</button>
+                <button class="suggestion-chip" onclick="useSuggestion(this.textContent)">Show my open opportunities</button>
+                <button class="suggestion-chip" onclick="useSuggestion(this.textContent)">Search for a contact by name</button>
+                <button class="suggestion-chip" onclick="useSuggestion(this.textContent)">What objects can I access?</button>
+            </div>
         </div>
     </div>
 

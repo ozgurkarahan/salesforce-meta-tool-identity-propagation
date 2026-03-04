@@ -104,7 +104,7 @@ function onSignedIn() {
     document.getElementById('authBtn').textContent = 'Sign out';
     document.getElementById('messageInput').disabled = false;
     document.getElementById('sendBtn').disabled = false;
-    document.getElementById('welcome').style.display = 'none';
+    document.getElementById('suggestions').style.display = 'flex';
 }
 
 function onSignedOut() {
@@ -113,6 +113,7 @@ function onSignedOut() {
     document.getElementById('messageInput').disabled = true;
     document.getElementById('sendBtn').disabled = true;
     document.getElementById('welcome').style.display = 'flex';
+    document.getElementById('suggestions').style.display = 'none';
     lastResponseId = null;
 }
 
@@ -120,12 +121,18 @@ function onSignedOut() {
 // Chat
 // ---------------------------------------------------------------------------
 
+function useSuggestion(text) {
+    document.getElementById('messageInput').value = text;
+    sendMessage();
+}
+
 async function sendMessage() {
     const input = document.getElementById('messageInput');
     const message = input.value.trim();
     if (!message) return;
 
     input.value = '';
+    document.getElementById('welcome').style.display = 'none';
     addMessage('user', message);
     setLoading(true);
 

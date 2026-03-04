@@ -239,3 +239,30 @@ body {
   font-size: 14px;
   max-width: 400px;
 }
+
+/* Suggestion chips */
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+  max-width: 480px;
+}
+
+.suggestion-chip {
+  background: white;
+  border: 1px solid #d0d0d0;
+  border-radius: 16px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #0078d4;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.suggestion-chip:hover {
+  background: #e8f0fe;
+  border-color: #0078d4;
+}
