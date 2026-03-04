@@ -82,14 +82,14 @@ python scripts/setup-sf-org.py --org myorg --email you@example.com \
 
 > We skip `fedid` (Federation IDs) for now — it requires Azure resources to exist first. We'll run it in [Phase 4](#phase-4-map-user-identities).
 
-The script runs 4 steps:
+The script runs 4 of 5 SF Setup Steps (step 5, `fedid`, is deferred to [Phase 4](#phase-4-map-user-identities)):
 
-| Step | Flag | What it does |
-|------|------|--------------|
-| 1/5 | `eca` | Deploys a Connected App with JWT Bearer flow + X.509 certificate. Sets OAuth policies to "Admin approved users are pre-authorized" and assigns profiles. |
-| 2/5 | `sso` | Creates an Entra App Registration and deploys a Salesforce Auth Provider for SSO (interactive browser login). |
-| 3/5 | `demo` | Creates a "Standard User - No Delete" profile, a demo user, and sample Account/Opportunity data. |
-| 4/5 | `svcacct` | Creates a dedicated service account with `Minimum Access - Salesforce` profile and `MCP_OBO_Service_Account` Permission Set (API Enabled + View All Users). |
+| SF Setup Step | Flag | What it does |
+|---------------|------|--------------|
+| 1. Connected App | `eca` | Deploys a Connected App with JWT Bearer flow + X.509 certificate. Sets OAuth policies to "Admin approved users are pre-authorized" and assigns profiles. |
+| 2. SSO Federation | `sso` | Creates an Entra App Registration and deploys a Salesforce Auth Provider for SSO (interactive browser login). |
+| 3. Demo Data | `demo` | Creates a "Standard User - No Delete" profile, a demo user, and sample Account/Opportunity data. |
+| 4. Service Account | `svcacct` | Creates a dedicated service account with `Minimum Access - Salesforce` profile and `MCP_OBO_Service_Account` Permission Set (API Enabled + View All Users). |
 
 ### Note down these values
 
@@ -151,12 +151,12 @@ This is a single-pass deployment. Here's what happens:
 
 2. **Container images are built and pushed** (~3 min): Chat App and Salesforce MCP server.
 
-3. **Postprovision hook runs** (~2 min):
-   - **Step 0:** Uploads `certs/sf-jwt-bearer.pfx` to Key Vault, creates the APIM certificate binding, and sets `SF_JWT_BEARER_CERT_THUMBPRINT` in the azd environment.
-   - **Step 1:** Creates Chat App Entra app registration (SPA with MSAL.js redirect URIs).
-   - **Step 2:** Creates the Foundry agent with Salesforce MCP tool configuration.
-   - **Step 3:** Updates Chat App Container App with Entra client ID and tenant ID.
-   - **Step 4:** Recreates OBO connection via ARM REST and updates APIM Named Values.
+3. **Postprovision hook runs** (~2 min) — these are **Post-Deploy Steps** (separate from the SF Setup Steps above):
+   - **Post-Deploy 0:** Uploads `certs/sf-jwt-bearer.pfx` to Key Vault, creates the APIM certificate binding, and sets `SF_JWT_BEARER_CERT_THUMBPRINT` in the azd environment.
+   - **Post-Deploy 1:** Creates Chat App Entra app registration (SPA with MSAL.js redirect URIs).
+   - **Post-Deploy 2:** Creates the Foundry agent with Salesforce MCP tool configuration.
+   - **Post-Deploy 3:** Updates Chat App Container App with Entra client ID and tenant ID.
+   - **Post-Deploy 4:** Recreates OBO connection via ARM REST and updates APIM Named Values.
 
 ### What to expect
 
@@ -215,6 +215,85 @@ Only users who will use the Chat App need their `FederationIdentifier` set. The 
 5. **Check Salesforce Login History** (Setup > Login History) — you should see a login from your user via "Connected App" with the OBO Connected App name
 
 If the agent responds without calling tools, check the Foundry connection target URL. If you get a 403 "User Not Mapped" error, re-run [Phase 4](#phase-4-map-user-identities).
+
+### Verify Permission Enforcement
+
+The identity propagation claim is only valuable if Salesforce actually enforces per-user permissions. Test this by comparing results between two users with different access levels.
+
+**Test 1: Field-Level Security (FLS)**
+
+If a user's profile does not grant read access to a field, that field is silently omitted from query results (no error — just missing data):
+
+```
+User: "Show me the Amount field on my opportunities"
+Agent: soql_query("SELECT Id, Name, Amount FROM Opportunity LIMIT 5")
+```
+
+- **Admin user:** Sees `Id`, `Name`, `Amount` in results.
+- **Restricted user (no Amount access):** Sees `Id`, `Name` only — `Amount` is silently excluded.
+- **If the field is completely inaccessible:** Returns `INVALID_FIELD` error with `errorCode: "INVALID_FIELD"`.
+
+**Test 2: Sharing Rules (Record Visibility)**
+
+Users only see records they own or that are shared with them via sharing rules, roles, or teams:
+
+```
+User: "How many accounts do I have?"
+Agent: soql_query("SELECT COUNT() FROM Account")
+```
+
+- **Admin:** Returns total org count.
+- **Sales rep:** Returns only their accounts (owned or shared).
+
+**Test 3: CRUD Permissions**
+
+If a user's profile doesn't allow delete on an object:
+
+```
+Agent: write_record(object_name="Account", operation="delete", record_id="001...")
+```
+
+Returns: `{"success": false, "errorCode": "INSUFFICIENT_ACCESS", "message": "You do not have permission to delete this record."}`
+
+**Test 4: Confirm in Login History**
+
+Go to Salesforce **Setup > Login History**. Each API call should appear under the user's own identity (not the service account), with the Connected App name as the application.
+
+---
+
+## Approval Flow for Destructive Operations
+
+When the Foundry agent calls an MCP tool, it can be configured to require user approval before execution. This is especially important for write and delete operations.
+
+### How It Works
+
+1. The agent decides to call a tool (e.g., `write_record` with `operation: "delete"`).
+2. Foundry checks the MCP connection's approval settings.
+3. If approval is required, the Chat App receives an `mcp_approval_request` instead of the tool result.
+4. The user sees the tool name, arguments, and can approve or deny.
+5. On approval, the Chat App sends an `mcp_approval_response` and the agent continues.
+
+### Configuring Approval in Foundry
+
+Approval settings are configured on the **MCP connection** in AI Foundry, not in the MCP server itself:
+
+1. Go to **AI Foundry > Your Project > Connections**
+2. Find the `salesforce-obo` connection
+3. Under **Tool approval**, choose one of:
+   - **Always require approval** — Every tool call needs user consent (safest for production)
+   - **Never require approval** — Tools execute immediately (fastest for development)
+   - **Require approval for specific tools** — Granular per-tool control (recommended):
+     - `write_record` — Approve (creates, updates, deletes)
+     - `process_approval` — Approve (approval workflow actions)
+     - `list_objects`, `describe_object`, `soql_query`, `search_records` — No approval needed (read-only)
+
+### Audit Trail
+
+Tool invocations are logged in the Chat App at INFO level with:
+- `tool_call`: tool name, arguments (truncated), errors
+- `tool_approval_requested`: tool name, server label, arguments
+
+These logs flow to App Insights when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set.
 
 ---
 

@@ -14,9 +14,9 @@ Exercises all client methods end-to-end:
 11. process_approval — skip gracefully if no approval process configured
 
 Usage:
-    # Set client credentials, then run (browser opens for login):
-    export SF_CLIENT_ID="your-connected-app-client-id"
-    export SF_CLIENT_SECRET="your-connected-app-client-secret"
+    # Set instance URL and a pre-supplied access token, then run:
+    export SF_INSTANCE_URL="https://your-org.my.salesforce.com"
+    export SF_ACCESS_TOKEN="<your-salesforce-access-token>"
     python scripts/test-salesforce-mcp.py
 """
 
@@ -54,17 +54,16 @@ async def main():
 
     sf = SalesforceClient()
 
-    # --- Step 1: Authenticate ---
-    print_step(1, "Authenticate to Salesforce")
-    try:
-        await sf.authenticate()
-        print(f"  OK — instance: {sf.instance_url}")
-    except Exception as e:
-        print(f"  FAILED: {e}")
-        print("\n  Check your environment variables:")
-        print("    SF_CLIENT_ID, SF_CLIENT_SECRET (for browser auth)")
-        print("    Or: SF_ACCESS_TOKEN, SF_INSTANCE_URL (pre-supplied token)")
+    # --- Step 1: Verify bearer token setup ---
+    print_step(1, "Verify bearer token setup")
+    if not sf.instance_url:
+        print("  FAILED: SF_INSTANCE_URL not set")
         return
+    if not sf._fallback_token:
+        print("  FAILED: SF_ACCESS_TOKEN not set (required for local testing)")
+        return
+    print(f"  OK -- instance: {sf.instance_url}")
+    print(f"  Token: {sf._fallback_token[:20]}...")
 
     # --- Step 2: List Objects ---
     print_step(2, "list_objects — Discover available objects")
@@ -204,9 +203,7 @@ async def main():
     assert id_field is not None, "Id field not found on Account"
     assert id_field.get("type") == "id", "Id field should have type 'id'"
     print(f"  Id field type={id_field.get('type')} — correct (allowed for upsert)")
-    # Verify refresh_token attribute exists on client
-    assert hasattr(sf, "refresh_token"), "refresh_token attribute missing from SalesforceClient"
-    print(f"  refresh_token stored: {sf.refresh_token is not None}")
+    print("  Client is bearer-passthrough-only (no refresh_token)")
 
     # --- Step 13: process_approval — test (skip if no approval process) ---
     print_step(13, "process_approval — Check for pending approvals")

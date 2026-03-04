@@ -4,6 +4,22 @@ Detailed technical content for the [Salesforce Meta-Tool: Identity Propagation](
 
 ---
 
+## Token Claim Glossary
+
+These terms appear throughout the docs. Understanding the difference prevents the most common debugging confusion.
+
+| Term | Source | Value | Used for |
+|------|--------|-------|----------|
+| Azure AD `oid` | Entra ID JWT | `d178a230-d9c1-...` (GUID) | Immutable user ID, same across all apps in the tenant. Default `IdentityClaimName` for OBO lookup. |
+| Azure AD `sub` | Entra ID JWT | `a1b2c3d4-...` (GUID) | Pairwise — different per app registration. Do NOT use for cross-app identity mapping. |
+| `preferred_username` | Entra ID JWT | `user@company.com` | User's UPN or email. Mutable — can change on name/domain change. Use with caution. |
+| SF `FederationIdentifier` | Salesforce User record | Whatever the upstream IdP sends | Single field that links an external identity to a SF user. Must be unique per org. |
+| SF JWT Bearer `sub` | JWT assertion payload | SF Username (e.g., `user@myorg.com`) | Must be the Salesforce Username — NOT the FederationIdentifier. This is the most common mistake. |
+
+**Key insight:** The APIM OBO policy bridges two identity spaces: it uses `FederationIdentifier` (matched via `oid`) to *find* the SF Username, then uses that Username as `sub` in the JWT Bearer assertion. These are two separate values serving two different purposes.
+
+---
+
 ## The Meta-Tool Pattern
 
 Most Salesforce MCP servers define one tool per object (`get_accounts`, `get_opportunities`, ...). That approach doesn't scale: an org with 100 custom objects needs 100 tools.
@@ -279,6 +295,66 @@ This means:
 1. **SSO can use any IdP chain** (PingFed, Okta, direct) with any claim mapping
 2. **OBO is independent** -- it only needs `FederationIdentifier` (or a custom field) set to the Entra ID `oid`
 3. **No conflict** if Solution A or B is used -- SSO and OBO coexist as long as the lookup field is consistent
+
+---
+
+## Certificate Rotation
+
+The X.509 certificate used for JWT Bearer signing has a default validity of 365 days. Plan for rotation before expiry.
+
+### When to Rotate
+
+- **Scheduled:** Before the cert expires (check `openssl x509 -in certs/sf-jwt-bearer.crt -noout -enddate`).
+- **Unscheduled:** If the private key is compromised or the cert is revoked.
+
+### Rotation Steps (Zero-Downtime)
+
+1. **Generate a new certificate** (same commands as [Phase 1](installation.md#phase-1-generate-x509-certificate)):
+   ```bash
+   openssl genrsa -out certs/sf-jwt-bearer-new.key 2048
+   openssl req -new -x509 -key certs/sf-jwt-bearer-new.key \
+     -out certs/sf-jwt-bearer-new.crt -days 365 \
+     -subj "/CN=SalesforceJWTBearer"
+   openssl pkcs12 -export -out certs/sf-jwt-bearer-new.pfx \
+     -inkey certs/sf-jwt-bearer-new.key -in certs/sf-jwt-bearer-new.crt \
+     -passout pass:
+   ```
+
+2. **Upload new cert to Salesforce Connected App.** Go to Setup > App Manager > your Connected App > Edit. Under "Use digital signatures," upload `sf-jwt-bearer-new.crt`. Salesforce accepts multiple certificates — the old one still works until you remove it.
+
+3. **Upload new PFX to Azure Key Vault.** The postprovision hook handles this, but you can also do it manually:
+   ```bash
+   az keyvault certificate import --vault-name <kv-name> \
+     --name sf-jwt-bearer --file certs/sf-jwt-bearer-new.pfx
+   ```
+   Key Vault versions the certificate. The new version is active immediately.
+
+4. **Update APIM certificate thumbprint.** The new cert has a different thumbprint:
+   ```bash
+   # Get new thumbprint
+   openssl x509 -in certs/sf-jwt-bearer-new.crt -noout -fingerprint -sha1 \
+     | sed 's/://g' | cut -d= -f2
+
+   # Update azd env and APIM Named Value
+   azd env set SF_JWT_BEARER_CERT_THUMBPRINT "<new-thumbprint>"
+   azd up   # or re-run postprovision hook
+   ```
+
+5. **Verify.** Send a message through the Chat App. Check Salesforce Login History for a successful "Connected App" login. If it works, remove the old cert from the Salesforce Connected App.
+
+6. **Replace local files:**
+   ```bash
+   mv certs/sf-jwt-bearer-new.key certs/sf-jwt-bearer.key
+   mv certs/sf-jwt-bearer-new.crt certs/sf-jwt-bearer.crt
+   mv certs/sf-jwt-bearer-new.pfx certs/sf-jwt-bearer.pfx
+   ```
+
+### Rollback
+
+If the new cert doesn't work, the old cert is still in Salesforce and the previous Key Vault version can be restored:
+```bash
+az keyvault certificate list-versions --vault-name <kv-name> --name sf-jwt-bearer
+```
 
 ---
 

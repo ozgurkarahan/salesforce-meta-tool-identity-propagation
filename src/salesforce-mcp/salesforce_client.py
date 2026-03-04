@@ -1,40 +1,38 @@
-"""Salesforce REST API client with auth, describe, query, and CRUD operations."""
+"""Salesforce REST API client — bearer passthrough mode (OBO via APIM).
+
+All authentication is handled by APIM's OBO token exchange policy. The client
+receives a per-request Salesforce access token via the BearerTokenMiddleware
+context var and uses it directly — no token management, refresh, or secrets.
+"""
 
 import contextvars
 import os
 import time
-import urllib.parse
 
 import httpx
 
-# Per-request bearer token for passthrough mode (set by middleware).
-# When set, _request() and query_more() use this token directly and do NOT
-# retry/refresh on 401 — the upstream caller owns the token lifecycle.
+# Per-request bearer token set by BearerTokenMiddleware.
+# The APIM gateway exchanges the user's Azure AD token for a Salesforce token
+# and forwards it in the Authorization header. This context var carries it
+# through to every _request() call.
 _request_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_request_token", default=None
 )
 
 
 class SalesforceClient:
-    """Async Salesforce REST API client.
+    """Async Salesforce REST API client (bearer passthrough only).
 
-    Supports two auth modes:
-    - Pre-supplied token: set SF_ACCESS_TOKEN + SF_INSTANCE_URL env vars
-    - Authorization code flow: interactive browser login (default fallback)
+    Expects a per-request token from APIM via the _request_token context var.
+    Falls back to SF_ACCESS_TOKEN env var for local testing only.
     """
 
-    REDIRECT_URI = "http://localhost:8443/callback"
-
     def __init__(self):
-        self.client_id = os.environ.get("SF_CLIENT_ID", "")
-        self.client_secret = os.environ.get("SF_CLIENT_SECRET", "")
-        self.login_url = os.environ.get("SF_LOGIN_URL", "https://login.salesforce.com")
         self.api_version = os.environ.get("SF_API_VERSION", "v62.0")
-
-        # Pre-supplied token (from auth code flow or external source)
-        self.access_token: str | None = os.environ.get("SF_ACCESS_TOKEN")
         self.instance_url: str | None = os.environ.get("SF_INSTANCE_URL")
-        self.refresh_token: str | None = None
+
+        # Optional: pre-supplied token for local testing (not used in production)
+        self._fallback_token: str | None = os.environ.get("SF_ACCESS_TOKEN")
 
         # Describe cache: object_name -> (timestamp, data)
         self._describe_cache: dict[str, tuple[float, dict]] = {}
@@ -47,138 +45,25 @@ class SalesforceClient:
     def _base_url(self) -> str:
         return f"{self.instance_url}/services/data/{self.api_version}"
 
-    async def authenticate(self) -> None:
-        """Authenticate via interactive authorization code flow (opens browser)."""
-        if self.access_token and self.instance_url:
-            return  # Already authenticated
-
-        if not self.client_id:
-            raise RuntimeError("SF_CLIENT_ID is required for authentication")
-
-        auth_code = self._get_auth_code_via_browser()
-        resp = await self._client.post(
-            f"{self.login_url}/services/oauth2/token",
-            data={
-                "grant_type": "authorization_code",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "code": auth_code,
-                "redirect_uri": self.REDIRECT_URI,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        self.access_token = data["access_token"]
-        self.instance_url = data["instance_url"]
-        self.refresh_token = data.get("refresh_token")
-
-    def _get_auth_code_via_browser(self) -> str:
-        """Open browser for OAuth login, capture authorization code via local callback."""
-        import http.server
-        import threading
-        import webbrowser
-
-        result = {}
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                if "code" in params:
-                    result["code"] = params["code"][0]
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html")
-                    self.end_headers()
-                    self.wfile.write(b"<h2>Success! You can close this tab.</h2>")
-                else:
-                    result["error"] = params.get("error", ["unknown"])[0]
-                    self.send_response(400)
-                    self.send_header("Content-Type", "text/html")
-                    self.end_headers()
-                    self.wfile.write(f"<h2>Error: {result['error']}</h2>".encode())
-
-            def log_message(self, format, *args):
-                pass
-
-        server = http.server.HTTPServer(("localhost", 8443), Handler)
-        thread = threading.Thread(target=server.handle_request, daemon=True)
-        thread.start()
-
-        authorize_url = (
-            f"{self.login_url}/services/oauth2/authorize"
-            f"?response_type=code"
-            f"&client_id={urllib.parse.quote(self.client_id)}"
-            f"&redirect_uri={urllib.parse.quote(self.REDIRECT_URI)}"
-            f"&scope=api+refresh_token"
-        )
-        print("Opening browser for Salesforce login...")
-        webbrowser.open(authorize_url)
-
-        thread.join(timeout=120)
-        server.server_close()
-
-        if "error" in result:
-            raise RuntimeError(f"Authorization failed: {result['error']}")
-        if "code" not in result:
-            raise RuntimeError("Timed out waiting for authorization callback")
-
-        return result["code"]
-
-    async def _refresh_access_token(self) -> bool:
-        """Try to refresh the access token using stored refresh token. Returns True on success."""
-        if not self.refresh_token or not self.client_id:
-            return False
-        try:
-            resp = await self._client.post(
-                f"{self.login_url}/services/oauth2/token",
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
-                    "refresh_token": self.refresh_token,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            self.access_token = data["access_token"]
-            if "refresh_token" in data:
-                self.refresh_token = data["refresh_token"]
-            return True
-        except httpx.HTTPError:
-            return False
-
     async def _request(
         self, method: str, path: str, *, _absolute: bool = False, **kwargs
     ) -> httpx.Response:
-        """Make an authenticated request, auto-refreshing on 401.
+        """Make an authenticated request using the per-request bearer token.
 
         Args:
             _absolute: When True, use instance_url + path instead of base_url + path.
                        Used for pagination URLs that already include the API version.
         """
-        # Passthrough mode: use per-request token from middleware (no retry/refresh)
-        passthrough_token = _request_token.get()
-        if passthrough_token:
-            url = f"{self.instance_url}{path}" if _absolute else f"{self._base_url}{path}"
-            headers = {"Authorization": f"Bearer {passthrough_token}"}
-            resp = await self._client.request(method, url, headers=headers, **kwargs)
-            resp.raise_for_status()
-            return resp
-
-        if not self.access_token:
-            await self.authenticate()
+        token = _request_token.get() or self._fallback_token
+        if not token:
+            raise RuntimeError(
+                "No bearer token available. In production, APIM provides the token "
+                "via the Authorization header. For local testing, set SF_ACCESS_TOKEN."
+            )
 
         url = f"{self.instance_url}{path}" if _absolute else f"{self._base_url}{path}"
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
+        headers = {"Authorization": f"Bearer {token}"}
         resp = await self._client.request(method, url, headers=headers, **kwargs)
-
-        if resp.status_code == 401:
-            self.access_token = None
-            if not await self._refresh_access_token():
-                await self.authenticate()
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-            resp = await self._client.request(method, url, headers=headers, **kwargs)
-
         resp.raise_for_status()
         return resp
 
@@ -206,13 +91,18 @@ class SalesforceClient:
         self._global_describe_cache = (now, result)
         return result
 
-    async def describe_object(self, object_name: str) -> dict:
-        """Get full field metadata for an sObject. Cached for 15 min."""
+    async def describe_object(self, object_name: str, slim: bool = False) -> dict:
+        """Get field metadata for an sObject. Cached for 15 min.
+
+        Args:
+            slim: When True, return only {name, fields: [{name, type, required}]}.
+                  Full result is always cached — slim just filters the response.
+        """
         now = time.time()
         if object_name in self._describe_cache:
             ts, data = self._describe_cache[object_name]
             if now - ts < self._cache_ttl:
-                return data
+                return self._slim_describe(data) if slim else data
 
         resp = await self._request("GET", f"/sobjects/{object_name}/describe/")
         raw = resp.json()
@@ -251,7 +141,18 @@ class SalesforceClient:
             "childRelationships": child_relationships,
         }
         self._describe_cache[object_name] = (now, result)
-        return result
+        return self._slim_describe(result) if slim else result
+
+    @staticmethod
+    def _slim_describe(full: dict) -> dict:
+        """Strip a cached describe result down to names, types, and required flags."""
+        return {
+            "name": full["name"],
+            "fields": [
+                {"name": f["name"], "type": f["type"], "required": f["required"]}
+                for f in full["fields"]
+            ],
+        }
 
     async def query(self, soql: str) -> dict:
         """Execute a SOQL query. Returns {totalSize, records, done, nextRecordsUrl}."""

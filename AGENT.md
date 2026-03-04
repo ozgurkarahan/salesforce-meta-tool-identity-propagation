@@ -104,12 +104,14 @@ All SF setup is handled by `scripts/setup-sf-org.py`:
 python scripts/setup-sf-org.py --org <alias> --email <email> --cert certs/sf-jwt-bearer.crt
 ```
 
-The 5 steps (run individually with `--only <step>`):
+The 5 SF Setup Steps (run individually with `--only <step>`):
 1. **eca** — Create Connected App with JWT Bearer flow + X.509 certificate + profile pre-authorization
 2. **sso** — Entra App Registration + SF Auth Provider (interactive browser login)
 3. **demo** — Custom "Standard User - No Delete" profile + demo user + test data
 4. **svcacct** — Service account with Minimum Access profile + `MCP_OBO_Service_Account` Permission Set
 5. **fedid** — Set FederationIdentifier on SF users from Azure AD `oid`
+
+> **Note:** These are SF Setup Steps (run offline before deployment). The Post-Deploy Steps (cert upload, Entra app, Foundry agent, OBO connection) are handled automatically by `hooks/postprovision.py`.
 
 After setup, import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bearer`.
 

@@ -43,6 +43,11 @@ port = int(os.environ.get("PORT", "8000"))
 
 @asynccontextmanager
 async def lifespan(app):
+    # Recreate httpx client on each ASGI startup. This is needed because
+    # Container App revision updates trigger ASGI shutdown (closing the client
+    # via sf.close()) then restart — but the module-level `sf` singleton
+    # persists in Python's module cache with a closed httpx client.
+    sf._client = httpx.AsyncClient(timeout=30.0)
     yield
     await sf.close()
 
@@ -51,42 +56,35 @@ mcp = FastMCP(
     "Salesforce Meta Tool - MCP Server",
     lifespan=lifespan,
     instructions="""\
-Salesforce MCP server — dynamically discovers objects and fields via Salesforce metadata APIs.
+Salesforce MCP server — discovers objects and fields dynamically via metadata APIs.
 
-## Recommended workflow
-1. **list_objects** — Find the object API name (always use filter — 1000+ objects in a typical org).
-2. **describe_object** — Get field names, types, required fields, picklist values, and external ID flags.
-   MUST call before write_record to discover valid field API names.
-   For upsert: check `externalId: true` to find usable external ID fields.
-3. **soql_query / search_records / write_record / process_approval** — Perform the operation.
+## Workflow
+1. **Plan** — Tell the user what you intend to do before calling tools.
+2. **list_objects** — Find the API name (use `name`, not `label`, for all subsequent calls).
+3. **describe_object** — REQUIRED before create/update/upsert/delete.
+   For read queries, skip if you already know the field names, or use mode="slim" if unsure.
+4. **Execute** — soql_query, search_records, write_record, or process_approval.
+5. **Summarize** — Present results in plain language. Do NOT dump raw JSON for large results.
 
-## When to use which read tool
-- **soql_query** — Precise field-level queries on a known object. Supports relationship \
-queries, aggregates, GROUP BY, subqueries. Auto-paginates large results (use `max_records` \
-to control the limit, default 10000). E.g., "SELECT Id, Name, (SELECT FirstName \
-FROM Contacts) FROM Account WHERE Industry = 'Technology'"
-- **search_records** — Full-text keyword search across multiple objects simultaneously. \
-Use when you don't know which object contains the data. E.g., search for "Acme".
-
-## write_record operations
-- **create**: new record — requires object_name + field_values
-- **update**: modify existing — requires object_name + record_id + field_values
-- **upsert**: create-or-update by external ID — requires object_name + field_values + external_id_field. \
-The external_id_field must be marked as an External ID in Salesforce (check describe_object). \
-The Id field also works for upsert.
-- **delete**: permanent removal — requires object_name + record_id. Confirm with user first.
-
-## Important conventions
-- Object/field names use Salesforce API names (PascalCase): Account, Contact, OpportunityLineItem.
-- Field values use API field name as key: {"Name": "Acme", "Industry": "Technology"}.
+## Conventions
+- All API names are PascalCase: Account, OpportunityLineItem, Custom_Field__c.
+- Field values use API name as key: {"Name": "Acme", "Industry": "Technology"}.
 - Record IDs are 18-character alphanumeric strings.
-- Errors return {"success": false, "error": "..."} — follow the guidance in the message.
+- Common fields on standard objects: Id, Name, CreatedDate, OwnerId, LastModifiedDate.
+  You may query these without calling describe_object first.
 
-## Error handling
-- Salesforce errors return {"success": false, "errorCode": "...", "message": "..."}.
-- INSUFFICIENT_ACCESS = user lacks permission. Explain clearly what permission is missing.
-- INVALID_FIELD = bad field name. Suggest running describe_object.
-- When a tool returns an error, explain the reason to the user in plain language.
+## Rules
+- Do NOT guess field names — use describe_object (slim for reads, full for writes).
+- On INVALID_FIELD or MALFORMED_QUERY: call describe_object(mode="full"), fix field names, retry.
+- ALWAYS confirm with the user before delete or reject operations.
+- Always include LIMIT in SOQL unless the user specifically requests all rows.
+- Summarize large result sets in plain language — do not dump raw JSON.
+
+## Error recovery
+- **INSUFFICIENT_ACCESS** → User lacks permission. Explain which object/field and what permission is needed.
+- **ENTITY_IS_DELETED** → Record was deleted. Inform the user.
+- **UNABLE_TO_LOCK_ROW** → Concurrent edit. Wait a moment and retry once.
+- On any error, explain the cause in plain language before retrying.
 """,
     host="0.0.0.0",
     port=port,
@@ -138,15 +136,14 @@ async def list_objects(filter: str | None = None) -> str:
     """List available Salesforce objects with permission flags.
 
     A typical org has 1000+ objects. Always provide a filter to narrow results
-    (e.g., filter="Account", filter="Order", filter="Case"). Without a filter,
-    only the first 100 objects are returned alphabetically and you may miss
-    the object you need.
+    (e.g., "Account", "Order", "Case"). Without one, only the first 100
+    alphabetically are returned. Use `name` (API name) for all subsequent calls.
 
     Args:
-        filter: String to filter objects by name or label (case-insensitive). Strongly recommended.
+        filter: Case-insensitive filter on object name or label. Strongly recommended.
 
     Returns:
-        JSON array (max 100) of objects with name, label, queryable, createable, updateable, deletable flags.
+        JSON array (max 100) with name, label, queryable, createable, updateable, deletable.
     """
     log.info("tool=list_objects filter=%s", filter)
     t0 = time.monotonic()
@@ -168,24 +165,25 @@ async def list_objects(filter: str | None = None) -> str:
 
 
 @mcp.tool()
-async def describe_object(object_name: str) -> str:
-    """Get detailed field metadata for a Salesforce object.
-
-    Use this to discover field names, types, required fields, picklist values,
-    relationships, and external ID fields before querying or writing records.
-    Fields with externalId: true can be used for upsert operations.
+async def describe_object(object_name: str, mode: str = "slim") -> str:
+    """Get field metadata for a Salesforce object.
 
     Args:
-        object_name: The API name of the Salesforce object (e.g., Account, Contact, Opportunity).
+        object_name: API name (e.g., Account, Contact, Opportunity). Use `name` from list_objects.
+        mode: "slim" (default) — field names, types, required flags. Use for building queries.
+              "full" — includes picklistValues, referenceTo, childRelationships, externalId.
+              Use "full" before create/update/upsert/delete.
 
     Returns:
-        JSON with object name, label, fields (name, label, type, required, externalId, picklistValues, referenceTo),
-        and child relationships.
+        slim: JSON with name and fields (name, type, required).
+        full: JSON with fields (name, label, type, required, externalId, picklistValues,
+              referenceTo) and childRelationships.
     """
-    log.info("tool=describe_object object=%s", object_name)
+    slim = mode != "full"
+    log.info("tool=describe_object object=%s mode=%s", object_name, mode)
     t0 = time.monotonic()
     try:
-        result = await sf.describe_object(object_name)
+        result = await sf.describe_object(object_name, slim=slim)
     except httpx.HTTPStatusError as e:
         return _sf_error_response(e)
     log.info("tool=describe_object done elapsed=%.1fs", time.monotonic() - t0)
@@ -193,27 +191,24 @@ async def describe_object(object_name: str) -> str:
 
 
 @mcp.tool()
-async def soql_query(query: str, max_records: int = 10000) -> str:
-    """Execute a raw SOQL query against Salesforce with automatic pagination.
+async def soql_query(query: str, max_records: int = 2000) -> str:
+    """Execute a SOQL query with automatic pagination.
 
-    Takes a complete SOQL query string — the agent builds the query. Supports
-    the full SOQL syntax including relationship queries, aggregates, GROUP BY,
-    HAVING, date functions, and subqueries. Read-only (SOQL cannot mutate data).
+    Use for precise, structured lookups. Use search_records for full-text/fuzzy search.
+    SOQL requires explicit field names (no SELECT *).
 
-    Results are automatically paginated — large result sets that exceed
-    Salesforce's page size (~2000) are fetched in full up to max_records.
-
-    Examples:
-        - Relationship query: "SELECT Id, Name, (SELECT FirstName, LastName FROM Contacts) FROM Account LIMIT 5"
-        - Aggregate: "SELECT Industry, COUNT(Id) cnt FROM Account GROUP BY Industry"
-        - Parent lookup: "SELECT Id, Name, Account.Name FROM Contact LIMIT 5"
+    Syntax:
+        - Parent fields: `Account.Name` (dot notation via referenceTo).
+        - Child subqueries: `(SELECT Id FROM Contacts)` (uses relationshipName, not object name).
+        - Examples: "SELECT Id, Name FROM Account LIMIT 5",
+          "SELECT Id, Account.Name FROM Contact LIMIT 5"
 
     Args:
-        query: Complete SOQL query string. Use describe_object to discover field names first.
-        max_records: Maximum records to return (default 10000, cap 50000). Prevents runaway pagination.
+        query: Complete SOQL string.
+        max_records: Max records to return (default 2000, cap 50000). Auto-paginates.
 
     Returns:
-        JSON with totalSize, records array, and done flag. done is false if results were truncated by max_records.
+        JSON with totalSize, records array, done flag. done=false means results were truncated.
     """
     log.info("tool=soql_query max_records=%d", max_records)
     t0 = time.monotonic()
@@ -245,22 +240,20 @@ async def search_records(
     objects: str | None = None,
     limit: int = 20,
 ) -> str:
-    """Search across multiple Salesforce objects using full-text search (SOSL).
+    """Full-text search across multiple Salesforce objects (SOSL).
 
-    SOSL searches across multiple objects simultaneously using full-text indexing.
-    Use this when you don't know which object contains the data, or for keyword
-    searches. For precise field-level filtering on a known object, use soql_query instead.
+    Use when the target object is unknown or for fuzzy/keyword search.
+    Prefer soql_query for exact matches and WHERE clauses.
 
     Args:
-        search_term: Plain text to search for (e.g., "Acme", "john.doe@example.com").
-            Special characters are auto-escaped.
-        objects: Optional SOSL RETURNING clause specifying which objects and fields to return.
-            E.g., "Account(Name, Industry), Contact(FirstName, LastName, Email)".
-            If omitted, searches all searchable objects with default fields.
-        limit: Maximum total records to return (default 20, max 200).
+        search_term: Plain text to search for (e.g., "Acme"). Special chars auto-escaped.
+        objects: RETURNING clause — objects and fields to return.
+            E.g., "Account(Name, Industry), Contact(FirstName, Email)".
+            Omit to search all objects with default fields.
+        limit: Max records to return (default 20, max 200).
 
     Returns:
-        JSON with searchRecords array containing matched records across objects.
+        JSON with searchRecords array.
     """
     log.info("tool=search_records term=%s objects=%s", search_term, objects)
     t0 = time.monotonic()
@@ -297,27 +290,21 @@ async def write_record(
 ) -> str:
     """Create, update, upsert, or delete a Salesforce record.
 
-    IMPORTANT: Call describe_object first to discover valid field API names and
-    required fields. Field names are validated before sending.
-
     Operations:
-        - create: New record. Requires field_values.
-        - update: Partial update. Requires record_id + field_values.
-        - upsert: Create-or-update by external ID. Requires field_values + external_id_field.
-            The external ID value must be included in field_values.
-        - delete: Permanent removal. Requires record_id. Confirm with the user first.
+        create  — field_values required (include all required fields).
+        update  — record_id + field_values (partial update).
+        upsert  — field_values + external_id_field. External ID value must be in field_values.
+        delete  — record_id only.
 
     Args:
-        object_name: The API name of the Salesforce object (e.g., Account, Contact).
+        object_name: API name (e.g., Account, Contact).
         operation: One of "create", "update", "upsert", "delete".
-        field_values: Field API names to values. Required for create/update/upsert, ignored for delete.
-            E.g., {"Name": "Acme Corp", "Industry": "Technology"}.
-        record_id: 18-character Salesforce record ID. Required for update/delete.
-        external_id_field: External ID field API name for upsert (e.g., "External_Id__c").
-            The field value must also be in field_values.
+        field_values: API field names to values. E.g., {"Name": "Acme", "Industry": "Technology"}.
+        record_id: 18-char Salesforce record ID. Required for update/delete.
+        external_id_field: External ID field for upsert. Must have externalId: true in describe_object.
 
     Returns:
-        JSON with success flag and details (e.g., id for create, created flag for upsert).
+        JSON with success flag and details (id for create, created flag for upsert).
     """
     log.info("tool=write_record object=%s op=%s", object_name, operation)
     t0 = time.monotonic()
@@ -411,16 +398,13 @@ async def process_approval(
 ) -> str:
     """Submit, approve, or reject a Salesforce approval request.
 
-    To find pending approvals, use soql_query:
-        "SELECT Id, ProcessInstance.TargetObjectId, ProcessInstance.TargetObject.Name,
-         Actor.Name, CreatedDate FROM ProcessInstanceWorkitem WHERE Actor.Id = '...'"
-
-    Confirm with the user before approving or rejecting.
+    For Approve/Reject, query ProcessInstanceWorkitem first to get the workitem ID.
+    The record_id for Submit is the record itself; for Approve/Reject it is the
+    ProcessInstanceWorkitem ID (not the record).
 
     Args:
         action: One of "Submit", "Approve", "Reject".
-        record_id: For Submit — the record ID to submit for approval.
-            For Approve/Reject — the ProcessInstanceWorkitem ID.
+        record_id: For Submit — the record ID. For Approve/Reject — the ProcessInstanceWorkitem ID.
         comments: Optional comments for the approval action.
 
     Returns:
@@ -458,9 +442,8 @@ async def process_approval(
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     """Extract Authorization: Bearer token and set it as the per-request context var.
 
-    When a bearer token is present (e.g., from APIM), the SalesforceClient uses
-    it directly without retry/refresh. When absent (local dev), the existing
-    self-managed token flow kicks in unchanged.
+    In production, APIM exchanges the user's Azure AD token for a Salesforce
+    token and forwards it here. For local testing, set SF_ACCESS_TOKEN env var.
     """
 
     async def dispatch(self, request: Request, call_next):

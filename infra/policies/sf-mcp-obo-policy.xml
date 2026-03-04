@@ -24,8 +24,15 @@
             </issuers>
         </validate-jwt>
 
-        <!-- Extract user identity (claim name is parameterized for IdP flexibility) -->
-        <set-variable name="aadOid" value="@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("{{IdentityClaimName}}", ""))" />
+        <!-- Extract user identity (claim name is parameterized for IdP flexibility).
+             SECURITY: The claim value is sanitized for SOQL injection below.
+             For GUID claims (oid) this is defense-in-depth. For user-controlled
+             claims (email, preferred_username) this is essential. -->
+        <set-variable name="aadOid" value="@{
+            var raw = ((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("{{IdentityClaimName}}", "");
+            // Sanitize for SOQL: escape single quotes and backslashes
+            return raw.Replace("\\", "\\\\").Replace("'", "\\'");
+        }" />
         <set-variable name="aadUpn" value="@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("preferred_username", ""))" />
 
         <!-- ================================================================
@@ -276,7 +283,12 @@
         </set-header>
     </inbound>
     <backend>
-        <base />
+        <!-- buffer-response=false is required for MCP Streamable HTTP.
+             Foundry's MCP client uses GET with Accept: text/event-stream
+             to receive tool results via SSE. Default buffering (true) causes
+             APIM to hold the entire SSE response before forwarding, which
+             the client interprets as a connection failure. -->
+        <forward-request buffer-response="false" />
     </backend>
     <outbound>
         <base />

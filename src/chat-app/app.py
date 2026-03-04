@@ -79,8 +79,11 @@ def _get_agent_client(access_token: str):
     return AIProjectClient(endpoint=endpoint, credential=credential)
 
 
-def _parse_output_items(output_items):
-    """Parse Responses API output items into a structured result."""
+def _parse_output_items(output_items, request_id: str = ""):
+    """Parse Responses API output items into a structured result.
+
+    Logs tool invocations for observability (tool name, args, approval status).
+    """
     result = {
         "type": "text",
         "text": "",
@@ -94,12 +97,32 @@ def _parse_output_items(output_items):
         if item_type == "mcp_approval_request":
             result["type"] = "approval_required"
             result["approval_required"] = True
+            tool_name = getattr(item, "name", "")
+            tool_args = getattr(item, "arguments", {})
             result["approval_ids"].append({
                 "id": getattr(item, "id", ""),
-                "name": getattr(item, "name", ""),
+                "name": tool_name,
                 "server_label": getattr(item, "server_label", ""),
-                "arguments": getattr(item, "arguments", {}),
+                "arguments": tool_args,
             })
+            logger.info(
+                "tool_approval_requested request_id=%s tool=%s server=%s args=%s",
+                request_id, tool_name,
+                getattr(item, "server_label", ""),
+                str(tool_args)[:300],
+            )
+
+        elif item_type == "mcp_call":
+            # Log MCP tool calls (completed calls that didn't require approval)
+            tool_name = getattr(item, "name", "")
+            tool_args = getattr(item, "arguments", {})
+            tool_error = getattr(item, "error", None)
+            logger.info(
+                "tool_call request_id=%s tool=%s args=%s error=%s",
+                request_id, tool_name,
+                str(tool_args)[:300],
+                str(tool_error)[:200] if tool_error else None,
+            )
 
         elif item_type == "message":
             content = getattr(item, "content", [])
@@ -188,7 +211,7 @@ async def chat(request: Request):
                     request_id, item_type, str(item)[:500],
                 )
 
-        parsed = _parse_output_items(output_items)
+        parsed = _parse_output_items(output_items, request_id)
 
         # Get text from output_text if not found in items
         if not parsed["text"]:
@@ -265,7 +288,7 @@ async def chat_approve(request: Request):
         )
 
         output_items = getattr(response, "output", [])
-        parsed = _parse_output_items(output_items)
+        parsed = _parse_output_items(output_items, request_id="approve")
 
         if not parsed["text"]:
             parsed["text"] = getattr(response, "output_text", "") or ""
