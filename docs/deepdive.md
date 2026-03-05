@@ -83,6 +83,8 @@ The tool surface is **fixed**: six tools, 1,235 tokens. Whether the org has 50 o
 
 ## Identity Propagation: End-to-End
 
+<p align="center"><img src="diagrams/obo-token-exchange.gif" width="600" alt="OBO Token Exchange — Detailed Identity Propagation"></p>
+
 ### The Problem
 
 The most common enterprise MCP pattern connects via a service account:
