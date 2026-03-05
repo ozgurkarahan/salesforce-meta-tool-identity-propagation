@@ -83,7 +83,10 @@ The tool surface is **fixed**: six tools, 1,235 tokens. Whether the org has 50 o
 
 ## Identity Propagation: End-to-End
 
-<p align="center"><img src="diagrams/obo-token-exchange.gif" width="600" alt="OBO Token Exchange — Detailed Identity Propagation"></p>
+<table><tr>
+<td><img src="diagrams/obo-token-exchange.gif" alt="OBO Token Exchange — Animated"></td>
+<td><img src="diagrams/obo-token-exchange.png" alt="OBO Token Exchange — Static"></td>
+</tr></table>
 
 ### The Problem
 

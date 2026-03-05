@@ -30,17 +30,23 @@ azd up   # deploys the full stack in ~15 minutes
 
 The user asks a question. The agent discovers objects, learns schemas, and queries Salesforce — all through the same six tools, all with the user's own identity.
 
-<p align="center"><img src="docs/diagrams/message-flow-sequence.gif" width="600" alt="Message Flow — Salesforce Meta-Tool Pattern"></p>
+<table><tr>
+<td><img src="docs/diagrams/message-flow-sequence.gif" alt="Message Flow — Animated"></td>
+<td><img src="docs/diagrams/message-flow-sequence.png" alt="Message Flow — Static"></td>
+</tr></table>
 
-> **Static version:** [PNG](docs/diagrams/message-flow-sequence.png) | [Excalidraw source](docs/diagrams/message-flow-sequence.excalidraw)
+> [Excalidraw source](docs/diagrams/message-flow-sequence.excalidraw)
 
 ### On-Behalf-Of (OBO) Token Exchange
 
 APIM handles a three-phase exchange: validate the Azure AD JWT, resolve the Salesforce username, and acquire a per-user Salesforce token. The MCP server never sees Azure AD credentials.
 
-<p align="center"><img src="docs/diagrams/obo-token-exchange-overview.gif" width="600" alt="OBO Token Exchange — Overview"></p>
+<table><tr>
+<td><img src="docs/diagrams/obo-token-exchange-overview.gif" alt="OBO Token Exchange — Animated"></td>
+<td><img src="docs/diagrams/obo-token-exchange-overview.png" alt="OBO Token Exchange — Static"></td>
+</tr></table>
 
-> **Deep dive:** [Detailed OBO exchange animation](docs/diagrams/obo-token-exchange.gif) | [Static PNGs](docs/diagrams/obo-token-exchange-overview.png) | [Excalidraw source](docs/diagrams/obo-token-exchange.excalidraw)
+> **Deep dive:** [Detailed OBO exchange animation](docs/diagrams/obo-token-exchange.gif) | [Full detail PNG](docs/diagrams/obo-token-exchange.png) | [Excalidraw source](docs/diagrams/obo-token-exchange.excalidraw)
 
 ## The 6 Tools: 1,235 Tokens for All of Salesforce
 
