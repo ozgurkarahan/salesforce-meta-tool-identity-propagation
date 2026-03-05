@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Agent Identity Propagation – OBO Flow</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0b0f1a;
+    --surface:  #111827;
+    --border:   #1e2d40;
+    --az:       #2563eb;
+    --az-light: #dbe4ff;
+    --ap:       #7c3aed;
+    --ap-light: #ede9fe;
+    --sf:       #16a34a;
+    --sf-light: #dcfce7;
+    --ink:      #f0f4f8;
+    --muted:    #64748b;
+    --mono:     'IBM Plex Mono', monospace;
+    --sans:     'IBM Plex Sans', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+    font-family: var(--sans);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  h1::before, h1::after {
+    content: '';
+    display: block;
+    height: 1px;
+    width: 40px;
+    background: var(--border);
+  }
+
+  .card {
+    width: 100%;
+    max-width: 980px;
+    background: #fff;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.07),
+      0 8px 48px rgba(0,0,0,0.5),
+      0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    background: #fff;
+  }
+
+  .toolbar {
+    background: #f8fafc;
+    border-top: 1px solid #e2e8f0;
+    padding: 10px 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .btn {
+    flex-shrink: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: #fff;
+    background: var(--az);
+    border: none;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .btn:hover  { background: #1d4ed8; }
+  .btn:active { transform: scale(0.97); }
+
+  .progress {
+    flex: 1;
+    height: 4px;
+    background: #e2e8f0;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--az) 0%, var(--ap) 50%, var(--sf) 100%);
+    border-radius: 2px;
+    transition: width 0.12s linear;
+  }
+
+  .scene-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    min-width: 180px;
+    text-align: right;
+  }
+
+  .meta {
+    margin-top: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: #2d3748;
+    opacity: 0.45;
+    letter-spacing: 0.05em;
+  }
+</style>
+</head>
+<body>
+
+<h1>Identity Propagation · OBO Flow</h1>
+
+<div class="card">
+  <canvas id="c" width="960" height="520"></canvas>
+  <div class="toolbar">
+    <button class="btn" id="replayBtn">▶ REPLAY</button>
+    <div class="progress"><div class="progress-fill" id="pf"></div></div>
+    <span class="scene-tag" id="st">Loading…</span>
+  </div>
+</div>
+
+<p class="meta">oid=alice · Azure AD → AI Foundry → APIM → MCP Server → Salesforce</p>
+
+<script>
+'use strict';
+/* ═══════════════════════════════════════════════════════════════════════
+   CANVAS SETUP
+══════════════════════════════════════════════════════════════════════ */
+const CVS = document.getElementById('c');
+const X   = CVS.getContext('2d');
+const CW  = 960, CH = 520;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   COLOUR PALETTE
+══════════════════════════════════════════════════════════════════════ */
+const C = {
+  azBg:'#dbe4ff', azBd:'#4a9eed', azTx:'#2563eb', azNd:'#a5d8ff', azDk:'#1d4ed8',
+  apBg:'#ede9fe', apBd:'#8b5cf6', apTx:'#6d28d9', apHd:'#ddd6fe',
+  sfBg:'#dcfce7', sfBd:'#4ade80', sfTx:'#15803d', sfNd:'#bbf7d0', sfDk:'#166534',
+  ink:'#1e293b', sub:'#64748b', wht:'#ffffff',
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CAMERA  (all views are 960/520 = 1.846:1 aspect ratio)
+══════════════════════════════════════════════════════════════════════ */
+const VIEWS = {
+  full:  {x:-40,  y:-15, w:1130, h:612},
+  azure: {x:-190, y:48,  w:750,  h:406},
+  apim:  {x:162,  y:48,  w:750,  h:406},
+  sf:    {x:518,  y:48,  w:750,  h:406},
+};
+
+let cam = {...VIEWS.full};
+let cFrom = {...cam}, cTo = {...cam}, cT = 1;
+
+const lerp = (a,b,t) => a+(b-a)*t;
+const ease = t => t<.5 ? 2*t*t : -1+(4-2*t)*t;
+
+function goTo(name) {
+  cFrom = {...cam};
+  cTo   = {...VIEWS[name]};
+  cT    = 0;
+}
+
+function tickCam(dt) {
+  if(cT >= 1) return;
+  cT = Math.min(1, cT + dt * 1.1);
+  const e = ease(cT);
+  cam.x = lerp(cFrom.x, cTo.x, e);
+  cam.y = lerp(cFrom.y, cTo.y, e);
+  cam.w = lerp(cFrom.w, cTo.w, e);
+  cam.h = lerp(cFrom.h, cTo.h, e);
+}
+
+// Scene → Canvas coordinate transforms (uniform scale, width-driven)
+const sc  = ()  => CW / cam.w;
+const px  = x   => (x - cam.x) * sc();
+const py  = y   => (y - cam.y) * sc() + (CH - cam.h * sc()) / 2;
+const ps  = v   => v * sc();
+
+/* ═══════════════════════════════════════════════════════════════════════
+   DRAW HELPERS
+══════════════════════════════════════════════════════════════════════ */
+function rrPath(x,y,w,h,r) {
+  X.beginPath();
+  X.moveTo(x+r,y);
+  X.lineTo(x+w-r,y); X.arcTo(x+w,y,  x+w,y+r,  r);
+  X.lineTo(x+w,y+h-r); X.arcTo(x+w,y+h,x+w-r,y+h,r);
+  X.lineTo(x+r,y+h);   X.arcTo(x,  y+h,x,  y+h-r,r);
+  X.lineTo(x,y+r);     X.arcTo(x,  y,  x+r,y,   r);
+  X.closePath();
+}
+
+function box(x,y,w,h, fill, stroke, lw=2, rad=8, a=1) {
+  X.globalAlpha = a;
+  rrPath(px(x), py(y), ps(w), ps(h), ps(rad));
+  if(fill)   { X.fillStyle=fill;   X.fill(); }
+  if(stroke) { X.strokeStyle=stroke; X.lineWidth=ps(lw); X.stroke(); }
+  X.globalAlpha = 1;
+}
+
+function ell(x,y,w,h, fill,stroke,lw=2,a=1) {
+  X.globalAlpha = a;
+  X.beginPath();
+  X.ellipse(px(x+w/2), py(y+h/2), ps(w/2), ps(h/2), 0, 0, Math.PI*2);
+  if(fill)   { X.fillStyle=fill;   X.fill(); }
+  if(stroke) { X.strokeStyle=stroke; X.lineWidth=ps(lw); X.stroke(); }
+  X.globalAlpha = 1;
+}
+
+function txt(str, x, y, sz, col, align='center', a=1, bold=false) {
+  X.globalAlpha = a;
+  X.fillStyle   = col;
+  X.font        = `${bold?'700':'500'} ${ps(sz)}px 'IBM Plex Sans',system-ui,sans-serif`;
+  X.textAlign   = align;
+  X.textBaseline= 'middle';
+  str.split('\n').forEach((line,i) => {
+    X.fillText(line, px(x), py(y) + i * ps(sz) * 1.35);
+  });
+  X.globalAlpha = 1;
+}
+
+function mono(str, x, y, sz, col, align='center', a=1) {
+  X.globalAlpha = a;
+  X.fillStyle   = col;
+  X.font        = `600 ${ps(sz)}px 'IBM Plex Mono',monospace`;
+  X.textAlign   = align;
+  X.textBaseline= 'middle';
+  X.fillText(str, px(x), py(y));
+  X.globalAlpha = 1;
+}
+
+function lbox(x,y,w,h, fill,stroke, label,lc, sz=13, a=1) {
+  box(x,y,w,h, fill,stroke, 2,8, a);
+  txt(label, x+w/2, y+h/2, sz, lc, 'center', a);
+}
+
+function arrow(pts, col, lw=2, dashed=false, a=1) {
+  if(!pts || pts.length < 2) return;
+  X.globalAlpha = a;
+  X.strokeStyle = col;
+  X.lineWidth   = ps(lw);
+  X.lineCap     = 'round';
+  X.lineJoin    = 'round';
+  X.setLineDash(dashed ? [ps(7), ps(5)] : []);
+  X.beginPath();
+  X.moveTo(px(pts[0][0]), py(pts[0][1]));
+  pts.slice(1).forEach(p => X.lineTo(px(p[0]), py(p[1])));
+  X.stroke();
+  X.setLineDash([]);
+  // Arrowhead
+  const [lx,ly] = pts[pts.length-1];
+  const [bx,by] = pts[pts.length-2];
+  const ang = Math.atan2(py(ly)-py(by), px(lx)-px(bx));
+  const as  = ps(10);
+  X.fillStyle = col;
+  X.beginPath();
+  X.moveTo(px(lx), py(ly));
+  X.lineTo(px(lx)-as*Math.cos(ang-.38), py(ly)-as*Math.sin(ang-.38));
+  X.lineTo(px(lx)-as*Math.cos(ang+.38), py(ly)-as*Math.sin(ang+.38));
+  X.closePath();
+  X.fill();
+  X.globalAlpha = 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ELEMENT DRAWERS
+   (coordinates match the uploaded .excalidraw file)
+══════════════════════════════════════════════════════════════════════ */
+const EL = {
+
+  // ── TITLE ────────────────────────────────────────────────────────
+  title: a => {
+    txt('AI Agent Identity Propagation', 520, 18, 19, C.ink, 'center', a, true);
+    mono('oid=alice preserved across every hop', 520, 43, 10, C.sub, 'center', a);
+  },
+
+  // ── ZONE BACKGROUNDS ─────────────────────────────────────────────
+  bg_az: a => {
+    box(2,72,356,382, C.azBg, C.azBd, 2,12, a*.55);
+    txt('Azure Cloud', 180, 87, 13, C.azTx, 'center', a, true);
+  },
+  bg_ap: a => {
+    box(393,74,311,382, C.apBg, C.apBd, 2,12, a*.55);
+    txt('API Gateway (APIM)', 549, 88, 13, C.apTx, 'center', a, true);
+  },
+  bg_sf: a => {
+    box(779,77,254,375, C.sfBg, C.sfBd, 2,12, a*.55);
+    txt('Salesforce', 906, 91, 13, C.sfTx, 'center', a, true);
+  },
+
+  // ── ALICE (stick figure) ─────────────────────────────────────────
+  alice: a => {
+    ell(17,235,30,30, C.azNd, C.azTx, 2, a);
+    box(17,267,30,25, C.azNd, C.azTx, 2, 4, a);
+    txt('Alice', 32, 307, 12, C.azDk, 'center', a, true);
+  },
+
+  // ── AZURE NODES ──────────────────────────────────────────────────
+  aad: a => lbox(131,133,130,40, C.azNd,C.azTx, 'Azure AD', C.azDk, 14, a),
+
+  arr_login: a => {
+    arrow([[32,235],[32,158],[131,158]], C.azTx, 2, true, a);
+    txt('Login', 78, 146, 10, C.azTx, 'center', a);
+  },
+
+  chat: a => lbox(133,257,133,40, C.azNd,C.azTx, 'Chat App', C.azDk, 14, a),
+
+  arr_id: a => {
+    arrow([[197,173],[197,257]], C.azTx, 2, false, a);
+    txt('ID Token', 238, 214, 10, C.azTx, 'center', a);
+  },
+
+  aif: a => lbox(138,382,120,44, C.azNd,C.azTx, 'AI Foundry', C.azDk, 13, a),
+
+  arr_ctx: a => {
+    arrow([[197,297],[197,382]], C.azTx, 2, false, a);
+    txt('User Context', 240, 340, 10, C.azTx, 'center', a);
+  },
+
+  // ── OBO TOKEN ARROW (Azure → APIM) ───────────────────────────────
+  obo: a => {
+    arrow([[258,404],[325,404],[325,142],[414,142]], C.apBd, 2, true, a);
+    box(284,254, 88,40, '#fff', C.apBd, 1, 6, a*0.9);
+    mono('OBO Token', 328,268, 9, C.apTx, 'center', a);
+    mono('oid=alice',  328,281, 9, C.apTx, 'center', a);
+  },
+
+  // ── APIM PHASES ──────────────────────────────────────────────────
+  apim_h: a => lbox(414,117,270,52, C.apHd,C.apTx, 'APIM 3-Phase Exchange', C.apTx, 13, a),
+
+  ph1: a => lbox(414,190,270,60, C.apBg,C.apBd, '1. Resolve SF User', C.apTx, 13, a),
+  a12: a => arrow([[549,250],[549,270]], C.apTx, 2, false, a),
+  ph2: a => lbox(414,270,270,60, C.apBg,C.apBd, '2. JWT Bearer Token', C.apTx, 13, a),
+  a23: a => arrow([[549,330],[549,350]], C.apTx, 2, false, a),
+  ph3: a => lbox(414,350,270,60, C.apHd,C.apTx, '3. Forward as Alice', C.apTx, 13, a),
+
+  // ── JWT BEARER ARROW (APIM → MCP) ────────────────────────────────
+  arr_jwt: a => {
+    arrow([[684,379],[762,379],[762,148],[862,148]], C.sfBd, 2.5, false, a);
+    box(693,258, 100,38, '#fff', C.sfBd, 1, 6, a*0.9);
+    mono('JWT Bearer', 743,271, 9, C.sfTx, 'center', a);
+    mono('[Alice]',    743,283, 9, C.sfTx, 'center', a);
+  },
+
+  // ── SALESFORCE NODES ─────────────────────────────────────────────
+  mcp: a => lbox(862,115,155,66, C.sfNd,C.sfTx, 'MCP Server', C.sfDk, 14, a),
+
+  arr_ms: a => {
+    arrow([[940,181],[940,248]], C.sfTx, 2, false, a);
+    txt('as Alice', 978, 215, 10, C.sfTx, 'center', a);
+  },
+
+  sfapi: a => lbox(890,248,100,42, C.sfNd,C.sfTx, 'SF APIs', C.sfDk, 14, a),
+
+  arr_au: a => {
+    arrow([[940,290],[940,371]], C.sfTx, 2, false, a);
+    txt('Audit', 978, 330, 10, C.sfTx, 'center', a);
+  },
+
+  // ── LOGIN HISTORY (success state) ────────────────────────────────
+  login: a => {
+    box(878,371,140,58, C.sfNd,C.sfTx, 2,8, a);
+    txt('Login History',  948, 390, 12, C.sfDk, 'center', a, true);
+    // Success badge row
+    txt('Alice', 930, 411, 11, C.sfDk, 'center', a);
+    // Green dot indicator
+    X.globalAlpha = a;
+    X.beginPath();
+    X.arc(px(994), py(411), ps(4), 0, Math.PI*2);
+    X.fillStyle = C.sfTx;
+    X.fill();
+    X.globalAlpha = 1;
+    txt('Success', 1002, 411, 11, C.sfTx, 'center', a);
+  },
+};
+
+// Render order (back → front)
+const ORDER = [
+  'bg_az','bg_ap','bg_sf','title',
+  'alice','aad','arr_login','chat','arr_id','aif','arr_ctx',
+  'obo','apim_h','ph1','a12','ph2','a23','ph3',
+  'arr_jwt','mcp','arr_ms','sfapi','arr_au','login',
+];
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ANIMATION SCRIPT
+══════════════════════════════════════════════════════════════════════ */
+const SCENES = [
+  { view:'full',  label:'Overview',              ms:1600, show:['title','bg_az','bg_ap','bg_sf'] },
+  { view:'azure', label:'Azure Cloud',           ms:3400, show:['alice','aad','arr_login','chat','arr_id','aif','arr_ctx'] },
+  { view:'apim',  label:'API Gateway (APIM)',    ms:3200, show:['obo','apim_h','ph1','a12','ph2','a23','ph3'] },
+  { view:'sf',    label:'Salesforce',            ms:3200, show:['arr_jwt','mcp','arr_ms','sfapi','arr_au','login'] },
+  { view:'full',  label:'Full flow — complete',  ms:2800, show:[] },
+];
+const TOTAL_MS = SCENES.reduce((s,sc)=>s+sc.ms, 0);
+
+let vis = {}, si = 0, se = 0, te = 0, lt = null, raf = null;
+
+function start() {
+  cancelAnimationFrame(raf);
+  vis = {}; si = 0; se = 0; te = 0; lt = null;
+  cam   = {...VIEWS.full};
+  cFrom = {...VIEWS.full};
+  cTo   = {...VIEWS.full};
+  cT    = 1;
+  goTo(SCENES[0].view);
+  document.getElementById('pf').style.width = '0%';
+  raf = requestAnimationFrame(frame);
+}
+
+function frame(ts) {
+  if(!lt) lt = ts;
+  const dt = Math.min((ts-lt)/1000, 0.1);
+  lt = ts;
+
+  te += dt*1000;
+  se += dt*1000;
+  tickCam(dt);
+
+  const scene = SCENES[si];
+  if(scene) {
+    const gap = Math.min(520, (scene.ms * 0.76) / Math.max(scene.show.length, 1));
+    scene.show.forEach((id,i) => {
+      const t0 = 300 + i*gap;
+      if(se >= t0) {
+        const a = Math.min(1, (se-t0) / 380);
+        if(a > (vis[id]||0)) vis[id] = a;
+      }
+    });
+    if(se >= scene.ms) {
+      se = 0; si++;
+      if(si < SCENES.length) goTo(SCENES[si].view);
+    }
+  }
+
+  // UI
+  document.getElementById('pf').style.width  = Math.min(100, te/TOTAL_MS*100)+'%';
+  document.getElementById('st').textContent  = si < SCENES.length
+    ? SCENES[si].label
+    : 'Done — click Replay to watch again';
+
+  // Render
+  X.clearRect(0,0,CW,CH);
+  X.fillStyle = '#ffffff'; X.fillRect(0,0,CW,CH);
+
+  for(const id of ORDER) {
+    const a = vis[id]||0;
+    if(a > 0.008) EL[id](a);
+  }
+
+  if(si < SCENES.length) raf = requestAnimationFrame(frame);
+}
+
+document.getElementById('replayBtn').addEventListener('click', start);
+window.addEventListener('load', start);
+</script>
+</body>
+</html>

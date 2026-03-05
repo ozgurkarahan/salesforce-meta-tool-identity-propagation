@@ -28,13 +28,11 @@ azd up   # deploys the full stack in ~15 minutes
 
 ## How It Works
 
-### Message Flow
-
 The user asks a question. The agent discovers objects, learns schemas, and queries Salesforce — all through the same six tools, all with the user's own identity.
 
-![Message Flow — Meta-Tool Pattern](docs/diagrams/message-flow-sequence.png)
+<p align="center"><img src="docs/diagrams/message-flow-sequence.gif" width="600" alt="Message Flow — Salesforce Meta-Tool Pattern"></p>
 
-> [Excalidraw source](docs/diagrams/message-flow-sequence.excalidraw)
+> **Static version:** [PNG](docs/diagrams/message-flow-sequence.png) | [Excalidraw source](docs/diagrams/message-flow-sequence.excalidraw)
 
 ### On-Behalf-Of (OBO) Token Exchange
 
