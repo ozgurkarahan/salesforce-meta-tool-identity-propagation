@@ -38,9 +38,9 @@ The user asks a question. The agent discovers objects, learns schemas, and queri
 
 APIM handles a three-phase exchange: validate the Azure AD JWT, resolve the Salesforce username, and acquire a per-user Salesforce token. The MCP server never sees Azure AD credentials.
 
-![On-Behalf-Of (OBO) Token Exchange — Overview](docs/diagrams/obo-token-exchange-overview.png)
+<p align="center"><img src="docs/diagrams/obo-token-exchange.gif" width="600" alt="OBO Token Exchange — Identity Propagation"></p>
 
-> **Deep dive:** [Full OBO Token Exchange with Cache and Key Vault detail](docs/diagrams/obo-token-exchange.png) | [Excalidraw source](docs/diagrams/obo-token-exchange.excalidraw)
+> **Static version:** [Overview PNG](docs/diagrams/obo-token-exchange-overview.png) | [Full detail PNG](docs/diagrams/obo-token-exchange.png) | [Excalidraw source](docs/diagrams/obo-token-exchange.excalidraw)
 
 ## The 6 Tools: 1,235 Tokens for All of Salesforce
 
