@@ -453,12 +453,66 @@ def update_obo_apim_named_values():
             os.unlink(body_file)
 
 
-def update_obo_connection():
-    """Recreate the OBO connection via ARM REST to ensure it's properly registered.
+# Default BYO OAuth2 client app for the OBO MCP connection (the Option C
+# dedicated Entra app "salesforce-mcp-cli", shared with the Copilot CLI flow).
+# Override with: azd env set MCP_OBO_OAUTH_CLIENT_ID <appId>
+DEFAULT_MCP_OBO_OAUTH_CLIENT_ID = "0bb553db-1b45-4f21-97a6-2586c987a4d5"
 
-    The OBO connection uses authType UserEntraToken — Foundry passes the user's
-    Azure AD token through to APIM, where APIM handles the SF token exchange.
-    Note: authType 'AAD' is NOT valid for RemoteTool connections.
+
+def _register_app_redirect_uri(client_id: str, redirect_url: str):
+    """Additively register redirect_url on the app's publicClient.redirectUris.
+
+    Foundry's OAuth2 BYO consent flow redirects to a per-connection consent URL
+    (https://global.consent.azure-apim.net/redirect/<guid>). That URL must be a
+    registered redirect URI on the BYO app, in the publicClient (mobile/desktop)
+    bucket. We append it without removing existing URIs so the Copilot CLI
+    loopback redirect URIs (http://localhost...) are preserved.
+    """
+    if not redirect_url or redirect_url == "None":
+        print("  WARNING: no redirectUrl returned — re-run hook or check the connection")
+        return
+    obj_id = run(f"az ad app show --id {client_id} --query id -o tsv")
+    if not obj_id:
+        print(f"  WARNING: could not resolve app object id for {client_id}")
+        print(f"  Add manually (Authentication > Mobile and desktop): {redirect_url}")
+        return
+    current = run(
+        f'az ad app show --id {client_id} --query "publicClient.redirectUris" -o json',
+        parse_json=True,
+    ) or []
+    if redirect_url in current:
+        print(f"  Redirect URI already registered: {redirect_url}")
+        return
+    _graph_patch(obj_id, {"publicClient": {"redirectUris": current + [redirect_url]}})
+    verify = run(
+        f'az ad app show --id {client_id} --query "publicClient.redirectUris" -o json',
+        parse_json=True,
+    ) or []
+    if redirect_url in verify:
+        print(f"  Registered Foundry redirect URI: {redirect_url}")
+    else:
+        print(f"  WARNING: could not register redirect URI — add manually: {redirect_url}")
+
+
+def update_obo_connection():
+    """Recreate the OBO connection via ARM REST as an OAuth2 "bring-your-own" MCP connection.
+
+    Foundry rejects authType=UserEntraToken against *.azure-api.net (Microsoft-
+    owned) hosts with "Cannot pass Microsoft token to untrusted MCP endpoint".
+    The supported pattern for a custom MCP server behind APIM is an OAuth2 BYO
+    connection: Foundry runs the auth-code + PKCE flow against the configured
+    Entra app and injects the resulting user token as a Bearer to APIM (which
+    then performs the Salesforce JWT-Bearer exchange).
+
+    Shape (api-version 2025-09-01):
+      - tokenUrl / authorizationUrl / refreshUrl / scopes are TOP-LEVEL under
+        properties (NOT inside metadata or credentials).
+      - credentials = {clientId, clientSecret:""}  (public client / PKCE).
+      - metadata = {type: custom_MCP} only.
+    The PUT returns properties.redirectUrl which must be registered as a
+    publicClient redirect URI on the BYO app (done here, additively). Consent is
+    one-time per user/connection/project; the offline_access scope enables
+    silent token refresh thereafter.
     """
     connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
     sf_mcp_obo_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
@@ -476,6 +530,15 @@ def update_obo_connection():
         print("  WARNING: Could not get subscription ID")
         return
 
+    tenant_id = (
+        os.environ.get("TENANT_ID")
+        or os.environ.get("AZURE_TENANT_ID")
+        or run("az account show --query tenantId -o tsv")
+    )
+    oauth_client_id = os.environ.get(
+        "MCP_OBO_OAUTH_CLIENT_ID", DEFAULT_MCP_OBO_OAUTH_CLIENT_ID
+    )
+
     rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
     account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
     project = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
@@ -485,39 +548,54 @@ def update_obo_connection():
         f"/resourceGroups/{rg}"
         f"/providers/Microsoft.CognitiveServices/accounts/{account}"
         f"/projects/{project}/connections/{connection_name}"
-        f"?api-version=2025-04-01-preview"
+        f"?api-version=2025-09-01"
     )
 
-    # Delete and recreate to ensure proper registration
-    print(f"  Deleting Bicep-created connection '{connection_name}'...")
-    run(f'az rest --method DELETE --url "{url}"')
-
+    authority = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0"
     body = {
         "properties": {
-            "authType": "UserEntraToken",
+            "authType": "OAuth2",
             "category": "RemoteTool",
             "target": sf_mcp_obo_endpoint,
-            "audience": "https://ai.azure.com",
             "metadata": {"type": "custom_MCP"},
-            "isSharedToAll": True,
+            "credentials": {
+                "clientId": oauth_client_id,
+                "clientSecret": "",
+            },
+            "tokenUrl": f"{authority}/token",
+            "authorizationUrl": f"{authority}/authorize",
+            "refreshUrl": f"{authority}/token",
+            "scopes": [
+                f"api://{oauth_client_id}/access_as_user",
+                "offline_access",
+            ],
         }
     }
 
+    # redirectUrl is only minted on a fresh create — delete first, then re-PUT.
+    print(f"  Deleting existing connection '{connection_name}'...")
+    run(f'az rest --method DELETE --url "{url}"')
+    time.sleep(6)
+
     body_file = _write_temp_json(body)
     try:
-        print(f"  Recreating connection '{connection_name}' via ARM REST...")
+        print(f"  Creating OAuth2 BYO connection '{connection_name}' via ARM REST...")
         result = run(
             f'az rest --method PUT --url "{url}" '
             f'--headers "Content-Type=application/json" '
             f'--body "@{body_file}"',
             parse_json=True,
         )
-        if result:
-            print("  SF OBO connection created")
-        else:
-            print("  WARNING: Failed to create SF OBO connection")
     finally:
         os.unlink(body_file)
+
+    if not result:
+        print("  WARNING: Failed to create SF OBO connection")
+        return
+
+    redirect_url = (result.get("properties", {}) or {}).get("redirectUrl", "")
+    print(f"  SF OBO connection created (OAuth2 BYO); redirectUrl={redirect_url or '(none)'}")
+    _register_app_redirect_uri(oauth_client_id, redirect_url)
 
 
 def create_memory_store(project_client):

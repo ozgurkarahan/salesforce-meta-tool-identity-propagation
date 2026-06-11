@@ -16,6 +16,7 @@
             <openid-config url="https://login.microsoftonline.com/{{TenantId}}/v2.0/.well-known/openid-configuration" />
             <audiences>
                 <audience>https://ai.azure.com</audience>
+                <audience>api://0bb553db-1b45-4f21-97a6-2586c987a4d5</audience>
             </audiences>
             <!-- Accept both v1 (sts.windows.net) and v2 (login.microsoftonline.com) issuers. -->
             <issuers>

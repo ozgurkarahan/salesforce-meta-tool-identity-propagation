@@ -8,6 +8,71 @@ Stable patterns graduated to `~/.claude/knowledge/` — see azure-apim.md, sales
 
 ## Project-Specific Lessons
 
+### 2026-06-12 — Foundry agents that reference an MCP connection DIRECTLY need OAuth2 BYO, NOT UserEntraToken (the `salesforce-mcp-cli` split alone was insufficient)
+
+**Context:** Follow-up to the 2026-06-11 entry below. After splitting discovery onto the dedicated `/salesforce-mcp-cli/*` API and keeping the OBO API discovery-free, the `customer360-assistant` agent (which references `salesforce-obo` + `servicenow-obo` connections directly via MCP tools) STILL failed:
+> `Error: Cannot pass Microsoft token to untrusted MCP endpoint. Endpoint=https://apim-sf-mcp-obo.azure-api.net/salesforce-mcp-obo/mcp`
+
+**Root cause (refined):** Foundry's client-side anti-confused-deputy pre-flight rejects `authType=UserEntraToken` connections whose `target` is a Microsoft-owned host (`*.azure-api.net`) **categorically** — regardless of the `audience` value or whether the path exposes discovery. Removing discovery from the OBO path (the 2026-06-11 fix) was necessary but NOT sufficient. The toolbox connection-mode path (`project_connection_id=`, validated 2026-05-16) tolerated UserEntraToken, but **direct agent MCP-tool references do not** (likely tightened in a newer Foundry release — the platform behavior changed under us).
+
+**Fix (validated e2e 2026-06-12):** Migrate the OBO connections from `UserEntraToken` to **OAuth2 "bring-your-own" (BYO)**. Foundry runs the auth-code + PKCE flow against our dedicated Entra app and injects the resulting **user** token as a Bearer to APIM (which still does the SF JWT-Bearer exchange).
+
+Correct connection payload (api-version **2025-09-01** — fields are TOP-LEVEL under `properties`, NOT in `metadata`/`credentials`):
+```jsonc
+{ "properties": {
+  "authType": "OAuth2", "category": "RemoteTool",
+  "target": "https://apim-sf-mcp-obo.azure-api.net/salesforce-mcp-obo/mcp",
+  "metadata": { "type": "custom_MCP" },
+  "credentials": { "clientId": "0bb553db-…", "clientSecret": "" },   // PKCE, empty secret
+  "tokenUrl": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
+  "authorizationUrl": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize",
+  "refreshUrl": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
+  "scopes": ["api://0bb553db-…/access_as_user", "offline_access"]
+}}
+```
+
+**Critical gotchas:**
+1. **`tokenUrl`/`authorizationUrl`/`refreshUrl`/`scopes` are TOP-LEVEL** under `properties`. Putting them inside `metadata` or `credentials` is the most common mistake → silent 401 (`auth.type=none`, no Authorization header reaches APIM).
+2. **redirectUrl is only minted on a FRESH create.** DELETE the connection, sleep ~6s, then PUT. The PUT response returns `properties.redirectUrl` = `https://global.consent.azure-apim.net/redirect/<guid>`.
+3. **Register that redirectUrl on the Entra app's `publicClient.redirectUris` (Mobile/desktop bucket), ADDITIVELY.** Must preserve the Copilot CLI loopback URIs (`http://localhost`, `http://localhost/oauth/callback`). `allowPublicClient` must be true (it already was). NOT the web/spa bucket.
+4. **Consent is one-time per user/connection/project.** First agent call surfaces an `oauth_consent_request` output item with a `consent_link` (HTTP 200, NOT an error — read it defensively: `consent_link` is not in the openai-python pydantic model, fall back to `__dict__`/`model_dump`/`consent_url`). `offline_access` → Foundry stores a refresh token → silent thereafter. The Entra user-consent grant persists at the user+app level, so re-creating the connection does NOT force re-consent for a user who already consented.
+
+**Does NOT break Copilot CLI:** all app changes were additive (2 redirect URIs added, nothing removed). The CLI uses the separate `/salesforce-mcp-cli/*` API (untouched) and the same app's loopback redirects. Verified post-fix: CLI `/mcp` still returns 401 + `WWW-Authenticate: Bearer resource_metadata=…` and the PRM doc still advertises `api://0bb553db-…/access_as_user` + `offline_access`.
+
+**WWW-Authenticate is irrelevant for Foundry** (RFC-9728 research, 3 parallel agents): Foundry uses **explicitly-configured connection metadata** (tokenUrl/authorizationUrl/scopes), it does NOT parse the backend's `WWW-Authenticate` header or do PRM→AS auto-discovery. The missing OBO WWW-Authenticate header never mattered for Foundry; the breakage was authType + scopes.
+
+**IaC:** `hooks/postprovision.py::update_obo_connection()` is the authoritative creator (REST 2025-09-01 + redirect registration). `infra/modules/sf-obo-connection.bicep` mirrors the shape but the 2025-04-01-preview Bicep type lacks the top-level OAuth2 fields (BCP037 — suppressed). `scripts/test_e2e_customer360.py` is the ONLY true validation (exercises Foundry pre-flight + consent). ServiceNow's `servicenow-obo` connection lives in the snow-meta-tool repo — same migration applied live.
+
+### 2026-06-11 — Option C discovery must live on its OWN APIM API path (do NOT add it to the Foundry OBO endpoint)
+
+**Context:** Adding the GH Copilot CLI / `mcp-remote` discovery chain (Option C) — `WWW-Authenticate: Bearer resource_metadata=...` on 401 + a PRM doc whose `authorization_servers` points at APIM — directly to the existing `/salesforce-mcp-obo/*` API (the one already used by Foundry agents `salesforce-assistant` and `customer360-assistant`) **broke both agents in production**.
+
+**Symptom:** Customer 360 in Foundry portal returned:
+> `Error: Cannot pass Microsoft token to untrusted MCP endpoint. Endpoint=https://apim-sf-mcp-obo.azure-api.net/salesforce-mcp-obo/mcp`
+
+**Root cause:** Foundry runs a **client-side anti-confused-deputy check** on every MCP endpoint before sending the agent's Entra token. When the endpoint self-declares as an OAuth resource (via WWW-Authenticate or a discoverable PRM doc) AND the requested scope is a Microsoft one (`https://ai.azure.com/.default`) AND the host is NOT on a Microsoft-trusted domain (`*.azure-api.net` is third-party), Foundry refuses to forward the token. The check is invisible at the HTTP layer — `validate-jwt` + OBO still work fine if you bypass Foundry and hit `/mcp` directly with curl/Invoke-WebRequest. **Cannot reproduce with a plain HTTP client. Must test from Foundry itself.**
+
+**Fix:** **Two completely separate APIM APIs**, one per audience type:
+
+| API path | Consumer | Discovery? | `aud` accepted by validate-jwt |
+|---|---|---|---|
+| `/salesforce-mcp-obo/*` | Foundry agents (Customer 360, SF Assistant) | **OFF** — no WWW-Authenticate, PRM `authorization_servers` = direct Entra URL | `https://ai.azure.com` **and** `api://0bb553db-...` (see 2026-06-12 update) |
+| `/salesforce-mcp-cli/*` | GH Copilot CLI via `mcp-remote` (Option C) | **ON** — full RFC 9728 chain + dedicated Entra app `salesforce-mcp-cli` | `api://0bb553db-...` |
+
+> **⚠️ SUPERSEDED IN PART (2026-06-12):** keeping discovery OFF on the OBO path was necessary but NOT sufficient — the agents still broke because the connections were `UserEntraToken`. The OBO connections are now **OAuth2 BYO** (see the 2026-06-12 entry at the top), so the OBO API's `validate-jwt` now also accepts `api://0bb553db-...` (the user token minted by the BYO flow). The discovery-OFF rule on the OBO path still stands.
+
+Both APIs share the same APIM instance and the same backend MCP server. They differ only in the inbound policy stack (validate-jwt audience + discovery exposure). The 2 worlds coexist permanently.
+
+**Files to NEVER ship modified again on the OBO API:**
+- `infra/policies/sf-mcp-obo-policy.xml` — `<on-error>` block stays single-branch (cache eviction only). NO `WWW-Authenticate` header on 401.
+- `infra/policies/sf-mcp-obo-prm-policy.xml` — `authorization_servers` stays `https://login.microsoftonline.com/{{TenantId}}/v2.0`. Never APIM-as-AS.
+
+**Operation-level vs API-level policy gotcha (deployment trap):** the OBO PRM doc value is stored in the **operation-level policy** on `apis/salesforce-mcp-obo-prm/operations/sf-obo-oauth-protected-resource/policies/policy`, NOT the API-level policy. A revert pushed only to the API-level policy will look successful but the live PRM endpoint will still serve the old (modified) value because the operation-level policy overrides it. Always PUT to both. Script reference: `~/.copilot/session-state/bb14be84-.../files/revert_obo_policies.py`.
+
+**Test methodology lesson (high-impact):** validating "will Foundry agents still work?" by running a JSON-RPC `initialize` with the right audience token from curl is **WRONG**. That tests the protocol layer (validate-jwt + OBO + backend) and gives a false-positive HTTP 200 + valid MCP handshake. The actual breakage is in Foundry's **client-side** pre-flight check. To validate Foundry behaviour, you must trigger the agent from the Foundry portal or SDK, never from a plain HTTP client.
+
+**Rule:** Any change to APIM that exposes OAuth-resource discovery metadata (WWW-Authenticate Bearer, PRM `/.well-known/oauth-protected-resource`, root AS metadata) MUST land on a dedicated API path that is NEVER consumed by Foundry agents that use `aud=https://ai.azure.com`. One API = one audience model = one discovery posture. Mixing them weaponises Foundry's own confused-deputy defence against you.
+
 ### 2026-03-29 — SAML SSO: 10 gotchas in one session
 
 **Context:** Rewrote `step_sso` from OIDC (required Apex RegistrationHandler) to SAML (pure config). Hit 10 distinct issues before end-to-end SSO worked.

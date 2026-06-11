@@ -38,6 +38,31 @@ def load_azd_env():
             os.environ.setdefault(key, value)
 
 
+def extract_consent_link(item):
+    """Defensively pull the consent link off an oauth_consent_request item.
+
+    `consent_link` is not part of the openai-python pydantic model, so it may
+    only be present in the raw payload. Fall back to __dict__, model_dump, and
+    the `consent_url` alias used by some API versions.
+    """
+    for attr in ("consent_link", "consent_url"):
+        val = getattr(item, attr, None)
+        if val:
+            return val
+    raw = getattr(item, "__dict__", {}) or {}
+    for key in ("consent_link", "consent_url"):
+        if raw.get(key):
+            return raw[key]
+    try:
+        dumped = item.model_dump()
+        for key in ("consent_link", "consent_url"):
+            if dumped.get(key):
+                return dumped[key]
+    except Exception:
+        pass
+    return ""
+
+
 def dump_output_items(output_items):
     """Print output items summary."""
     for item in output_items:
@@ -57,7 +82,7 @@ def dump_output_items(output_items):
             name = getattr(item, "name", "?")
             print(f"  [mcp_approval] {name}")
         elif item_type == "oauth_consent_request":
-            print(f"  [oauth_consent] {getattr(item, 'consent_link', '')[:80]}")
+            print(f"  [oauth_consent] {extract_consent_link(item)[:80]}")
         else:
             print(f"  [{item_type}] {str(item)[:200]}")
 
@@ -307,7 +332,7 @@ def main():
                 if getattr(item, "type", "") == "oauth_consent_request"
             ]
             if consent_items:
-                consent_link = getattr(consent_items[0], "consent_link", "")
+                consent_link = extract_consent_link(consent_items[0])
                 print(f"\n  OAuth consent required: {consent_link[:100]}")
                 import webbrowser
                 try:
