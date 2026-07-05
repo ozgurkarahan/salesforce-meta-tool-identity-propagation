@@ -6,6 +6,8 @@
 
 **One sign-on. Seven tools. Your entire Salesforce org, with the user's own identity enforced end-to-end.**
 
+> **📖 Identity Propagation series** — this repo is part of a series on end-to-end user identity propagation for AI agents: no service accounts in the data path, every action traceable to a real user. Read the story: [From Theory to Production: Salesforce Meta-Tool & Identity Propagation](https://www.linkedin.com/pulse/from-theory-production-salesforce-meta-tools-identity-ozgur-karahan-ch30e/). Companion repos: [propagate-id-entra](https://github.com/ozgurkarahan/propagate-id-entra) · [snow-meta-tool](https://github.com/ozgurkarahan/snow-meta-tool)
+
 ## Architecture
 
 <img src="docs/diagrams/azure-architecture.png" alt="Azure Architecture — Identity-Propagated MCP Meta-Tools">
