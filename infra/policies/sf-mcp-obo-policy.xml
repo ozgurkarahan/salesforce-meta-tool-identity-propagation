@@ -15,6 +15,10 @@
             output-token-variable-name="jwt">
             <openid-config url="https://login.microsoftonline.com/{{TenantId}}/v2.0/.well-known/openid-configuration" />
             <audiences>
+                <!-- OAuth2 identity-passthrough connections (Foundry -> custom MCP)
+                     send tokens for the MCP OAuth app. The legacy ai.azure.com
+                     audience is kept for backward compatibility only. -->
+                <audience>api://{{McpOauthClientId}}</audience>
                 <audience>https://ai.azure.com</audience>
             </audiences>
             <!-- Accept both v1 (sts.windows.net) and v2 (login.microsoftonline.com) issuers. -->

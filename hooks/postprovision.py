@@ -453,14 +453,57 @@ def update_obo_apim_named_values():
             os.unlink(body_file)
 
 
-def update_obo_connection():
-    """Recreate the OBO connection via ARM REST to ensure it's properly registered.
+def _register_connection_redirect(oauth_client_id, redirect_url):
+    """Append an ApiHub connection's redirect URI to the OAuth app's web.redirectUris.
 
-    The OBO connection uses authType UserEntraToken — Foundry passes the user's
-    Azure AD token through to APIM, where APIM handles the SF token exchange.
-    Note: authType 'AAD' is NOT valid for RemoteTool connections.
+    Each OAuth2 ApiHub connection gets its own redirect URI. If it is not
+    registered on the app, interactive consent fails with AADSTS50011.
+    These connections hold a client secret (confidential client), so the
+    redirect belongs in web.redirectUris — NOT publicClient.
+    Returns True on success.
     """
-    connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
+    app = run(f'az ad app show --id {oauth_client_id}', parse_json=True)
+    if not app or not isinstance(app, dict):
+        return False
+    uris = list((app.get("web") or {}).get("redirectUris") or [])
+    alt = redirect_url.replace(
+        "https://global.consent.azure-apim.net", "https://consent.azure-apim.net"
+    )
+    to_add = [u for u in (redirect_url, alt) if u and u not in uris]
+    if not to_add:
+        print("  Redirect URI already registered on the OAuth app")
+        return True
+    body_file = _write_temp_json({"web": {"redirectUris": uris + to_add}})
+    try:
+        result = run(
+            f'az rest --method PATCH '
+            f'--url "https://graph.microsoft.com/v1.0/applications/{app["id"]}" '
+            f'--headers "Content-Type=application/json" '
+            f'--body "@{body_file}"',
+        )
+        print(f"  Registered redirect URI(s) on app {oauth_client_id}: {to_add}")
+        return True
+    except Exception as e:
+        print(f"  WARNING: Could not register redirect URI automatically: {e}")
+        return False
+    finally:
+        os.unlink(body_file)
+
+
+def ensure_obo_connection():
+    """Ensure the SF OBO connection exists as OAuth2 identity passthrough. NEVER
+    deletes or overwrites an existing connection.
+
+    HISTORY (do not regress): Foundry blocks Microsoft-audience tokens to
+    self-hosted MCP endpoints ("Cannot pass Microsoft token to untrusted MCP
+    endpoint"). The trust list is Microsoft-managed with no customer opt-in, so
+    authType UserEntraToken is dead for custom MCP servers — OAuth2 identity
+    passthrough backed by an Entra app registration is the only supported
+    per-user pattern. A previous version of this function deleted and recreated
+    the connection as UserEntraToken on every azd up, silently reverting live
+    fixes and taking down every agent (2026-06-24 outage).
+    """
+    connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
     sf_mcp_obo_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
 
     if not sf_mcp_obo_endpoint:
@@ -468,7 +511,7 @@ def update_obo_connection():
         if apim_gateway:
             sf_mcp_obo_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
     if not sf_mcp_obo_endpoint:
-        print("  WARNING: No SF MCP OBO endpoint — skipping connection update")
+        print("  WARNING: No SF MCP OBO endpoint — skipping connection check")
         return
 
     sub_id = run("az account show --query id -o tsv")
@@ -488,36 +531,83 @@ def update_obo_connection():
         f"?api-version=2025-04-01-preview"
     )
 
-    # Delete and recreate to ensure proper registration
-    print(f"  Deleting Bicep-created connection '{connection_name}'...")
-    run(f'az rest --method DELETE --url "{url}"')
+    existing = run(f'az rest --method GET --url "{url}"', parse_json=True)
+    if existing and isinstance(existing, dict):
+        auth_type = (existing.get("properties") or {}).get("authType", "")
+        if auth_type == "OAuth2":
+            print(f"  Connection '{connection_name}' exists (OAuth2) — leaving untouched")
+        else:
+            print(f"  WARNING: Connection '{connection_name}' exists with authType "
+                  f"'{auth_type}' (expected OAuth2).")
+            print("  NOT modifying it automatically. Delete it and re-run, or fix it "
+                  "in the Foundry portal (agents wired to a non-OAuth2 connection "
+                  "fail with the 'untrusted MCP endpoint' error).")
+        return
 
+    oauth_client_id = os.environ.get("MCP_OAUTH_CLIENT_ID", "")
+    oauth_client_secret = os.environ.get("MCP_OAUTH_CLIENT_SECRET", "")
+    if not oauth_client_id or not oauth_client_secret:
+        print(f"  Connection '{connection_name}' does not exist and "
+              "MCP_OAUTH_CLIENT_ID / MCP_OAUTH_CLIENT_SECRET are not set.")
+        print("  Create an Entra app registration exposing scope "
+              "api://<appId>/access_as_user, then:")
+        print("    azd env set MCP_OAUTH_CLIENT_ID <appId>")
+        print("    azd env set MCP_OAUTH_CLIENT_SECRET <secret>")
+        print("  and re-run this hook. NOT creating a UserEntraToken fallback — "
+              "Foundry rejects it for custom MCP endpoints.")
+        return
+
+    tenant_id = run("az account show --query tenantId -o tsv")
+    login = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0"
     body = {
         "properties": {
-            "authType": "UserEntraToken",
+            "authType": "OAuth2",
             "category": "RemoteTool",
+            "group": "GenericProtocol",
             "target": sf_mcp_obo_endpoint,
-            "audience": "https://ai.azure.com",
+            "authorizationUrl": f"{login}/authorize",
+            "tokenUrl": f"{login}/token",
+            "refreshUrl": f"{login}/token",
+            "scopes": ["offline_access", f"api://{oauth_client_id}/access_as_user"],
+            "credentials": {
+                "clientId": oauth_client_id,
+                "clientSecret": oauth_client_secret,
+            },
             "metadata": {"type": "custom_MCP"},
-            "isSharedToAll": True,
+            "isSharedToAll": False,
         }
     }
 
     body_file = _write_temp_json(body)
     try:
-        print(f"  Recreating connection '{connection_name}' via ARM REST...")
+        print(f"  Creating OAuth2 connection '{connection_name}'...")
         result = run(
             f'az rest --method PUT --url "{url}" '
             f'--headers "Content-Type=application/json" '
             f'--body "@{body_file}"',
             parse_json=True,
         )
-        if result:
-            print("  SF OBO connection created")
-        else:
+        if not result:
             print("  WARNING: Failed to create SF OBO connection")
+            return
+        print("  SF OBO connection created (OAuth2)")
     finally:
         os.unlink(body_file)
+
+    # Register the connection's redirect URI on the OAuth app (AADSTS50011 otherwise).
+    created = run(f'az rest --method GET --url "{url}"', parse_json=True)
+    redirect_url = ""
+    if created and isinstance(created, dict):
+        redirect_url = (created.get("properties") or {}).get("redirectUrl", "") or ""
+    if redirect_url:
+        if not _register_connection_redirect(oauth_client_id, redirect_url):
+            print(f"  ACTION REQUIRED: add '{redirect_url}' (and its "
+                  "consent.azure-apim.net variant) to web.redirectUris of app "
+                  f"{oauth_client_id}, or user consent will fail with AADSTS50011.")
+    else:
+        print("  WARNING: Could not read the connection's redirectUrl — verify the "
+              f"redirect URI of '{connection_name}' is registered on app "
+              f"{oauth_client_id} before users consent.")
 
 
 def create_memory_store(project_client):
@@ -576,8 +666,9 @@ def create_memory_store(project_client):
 def create_agent():
     """Create a Foundry agent with the Salesforce MCP tool using the v2 SDK.
 
-    Uses the OBO connection (UserEntraToken) and the OBO APIM endpoint.
-    Includes MemorySearchPreviewTool for per-user conversational memory.
+    Uses the OBO connection (OAuth2 identity passthrough — see
+    ensure_obo_connection for why UserEntraToken must not be used) and the OBO
+    APIM endpoint. Includes MemorySearchPreviewTool for per-user memory.
     Returns the agent version number (for use by create_agent_deployment).
     """
     project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT")
@@ -591,7 +682,7 @@ def create_agent():
         apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
         if apim_gateway:
             sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
-    connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
+    connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
 
     if not sf_mcp_endpoint:
         print("WARNING: No SF MCP endpoint available — skipping agent creation.")
@@ -729,8 +820,8 @@ Check childRelationships on the parent object for an alternative path (subquery)
 def create_customer360_agent():
     """Create a Foundry agent with both Salesforce and ServiceNow MCP tools.
 
-    Connects to both salesforce-obo and servicenow-obo connections for unified
-    CRM+ITSM queries. Pre-checks that servicenow-obo connection exists.
+    Connects to the SF and SN OAuth2 OBO connections for unified CRM+ITSM
+    queries. Pre-checks that the ServiceNow connection exists.
     Returns the agent version number.
     """
     project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT")
@@ -744,7 +835,7 @@ def create_customer360_agent():
         apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
         if apim_gateway:
             sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
-    sf_connection = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo")
+    sf_connection = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
 
     if not sf_mcp_endpoint:
         print("WARNING: No SF MCP endpoint available — skipping Customer 360 agent.")
@@ -753,7 +844,7 @@ def create_customer360_agent():
     # SN MCP endpoint — derive from APIM gateway
     apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
     sn_mcp_endpoint = f"{apim_gateway}/servicenow-mcp-obo/mcp" if apim_gateway else ""
-    sn_connection = "servicenow-obo"
+    sn_connection = os.environ.get("SN_OBO_CONNECTION_NAME", "servicenow-obo-oauth2")
 
     if not sn_mcp_endpoint:
         print("WARNING: No SN MCP endpoint available — skipping Customer 360 agent.")
@@ -777,8 +868,15 @@ def create_customer360_agent():
     )
     if not conn_check or not isinstance(conn_check, dict):
         print(f"WARNING: '{sn_connection}' connection not found in Foundry project.")
-        print("  Deploy snow-meta-tool first (azd up), then re-run.")
+        print("  Create it as an OAuth2 identity-passthrough connection (see "
+              "ensure_obo_connection) or deploy snow-meta-tool first, then re-run.")
         print("  Skipping Customer 360 agent creation.")
+        return None
+    sn_auth_type = (conn_check.get("properties") or {}).get("authType", "")
+    if sn_auth_type != "OAuth2":
+        print(f"WARNING: '{sn_connection}' has authType '{sn_auth_type}' (expected "
+              "OAuth2). Agents wired to it will fail with the 'untrusted MCP "
+              "endpoint' error. Skipping Customer 360 agent creation.")
         return None
 
     print(f"\nProject endpoint: {project_endpoint}")
@@ -1598,8 +1696,17 @@ def main():
         print(f"\nWARNING: Chat App Entra registration failed (non-fatal): {e}")
         traceback.print_exc()
 
-    # Step 2: Create Foundry agent
-    print("\n--- Step 2: Create Foundry agent ---")
+    # Step 2: Ensure OBO connection exists (OAuth2) — BEFORE agent creation,
+    # since agents reference the connection by name.
+    print("\n--- Step 2: Salesforce OBO connection ---")
+    try:
+        ensure_obo_connection()
+    except Exception as e:
+        print(f"\nWARNING: SF OBO connection check failed (non-fatal): {e}")
+        traceback.print_exc()
+
+    # Step 2b: Create Foundry agent
+    print("\n--- Step 2b: Create Foundry agent ---")
     agent_version = None
     try:
         agent_version = create_agent()
@@ -1614,14 +1721,6 @@ def main():
         update_chat_app_settings()
     except Exception as e:
         print(f"\nWARNING: Chat App settings update failed (non-fatal): {e}")
-        traceback.print_exc()
-
-    # Step 4: Recreate OBO connection + update APIM Named Values
-    print("\n--- Step 4: Salesforce OBO connection ---")
-    try:
-        update_obo_connection()
-    except Exception as e:
-        print(f"\nWARNING: SF OBO connection update failed (non-fatal): {e}")
         traceback.print_exc()
 
     print("\n--- Step 4b: OBO APIM Named Values ---")

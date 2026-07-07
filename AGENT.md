@@ -32,7 +32,7 @@ The chat app is **agent-agnostic** — it works with any AI Foundry agent across
 
 ```
 AI Foundry Agent (salesforce-assistant)
-  → Foundry acquires Azure AD token (UserEntraToken connection)
+  → Foundry acquires user token via OAuth2 identity-passthrough connection (aud api://<MCP OAuth app>)
   → APIM validates Azure AD JWT
   → APIM Phase 1: service token → SOQL lookup (oid → SF username)
   → APIM Phase 2: JWT Bearer exchange (SF username → SF access token)
@@ -63,12 +63,15 @@ AI Foundry Agent (salesforce-assistant)
 - Service token failure on SOQL lookup → evicts service token → next request re-acquires
 - User not mapped → returns 403 with `user_not_mapped` error
 
-### UserEntraToken Connection (Foundry)
+### OAuth2 Identity-Passthrough Connection (Foundry)
 
-The `salesforce-obo` connection stores **no credentials**. It's a configuration that tells Foundry how to acquire the user's token:
-- `authType: UserEntraToken` — acquire user's Entra token automatically
-- `audience: https://ai.azure.com` — request token for this audience (must match APIM `validate-jwt`)
+The `salesforce-obo-oauth2` connection makes Foundry obtain the user's delegated token via a standard OAuth2 flow against our own Entra app (`MCP_OAUTH_CLIENT_ID`):
+- `authType: OAuth2` — clientId + clientSecret of the MCP OAuth app; scopes `api://<appId>/access_as_user` + `offline_access`
+- Each connection gets its own redirect URI which MUST be registered on the app's `web.redirectUris` (else AADSTS50011 at consent)
 - `target: https://apim-.../salesforce-mcp-obo/mcp` — send requests here
+- First call per user returns `oauth_consent_request` (one-time interactive consent); known platform bug: ApiHub stores but never uses the refresh token, so re-consent recurs after token expiry (~1h)
+
+**Do NOT use `authType: UserEntraToken`** — since 2026-05-22 Foundry blocks Microsoft-audience tokens to non-Microsoft MCP endpoints (`Cannot pass Microsoft token to untrusted MCP endpoint`). The trust list is Microsoft-managed with no customer opt-in; the check has intermittently flapped off (e.g. 2026-06-24 14:00–21:35 UTC) but always returns. Provisioning is handled by `ensure_obo_connection()` in `hooks/postprovision.py`, which never overwrites an existing connection.
 
 ## Customer 360 Agent
 
@@ -171,7 +174,7 @@ azd up
 - `infra/main.bicepparam` — Environment variable → Bicep param mapping
 - `infra/modules/apim-sf-mcp-obo.bicep` — OBO APIM API (native MCP type), backend, Named Values
 - `infra/modules/apim-jwt-bearer-cert.bicep` — Key Vault → APIM certificate binding
-- `infra/modules/sf-obo-connection.bicep` — Foundry UserEntraToken connection
+- Foundry OBO connection — created by `hooks/postprovision.py` `ensure_obo_connection()` (OAuth2; no Bicep module)
 - `infra/modules/cognitive.bicep` — AI Services account, project, App Insights connection
 - `infra/modules/subscription-role-assignment.bicep` — Subscription-level RBAC (Reader for Resource Graph discovery)
 - `infra/modules/bot-service.bicep` — Bot Service + Teams/DirectLine channels (conditional on msaAppId)
@@ -238,8 +241,8 @@ The `IdentityClaimName` Named Value (default: `oid`) controls which JWT claim is
 | OIDC discovery URL | `sf-mcp-obo-policy.xml` line 16 | PingFed/Okta OIDC endpoint |
 | Issuer validation | `sf-mcp-obo-policy.xml` lines 21-24 | New issuer(s) |
 | Identity claim name | `IDENTITY_CLAIM_NAME` env var | `oid` → `sub` or custom |
-| Audience | `sf-mcp-obo-policy.xml` line 18 | Match IdP config |
-| Foundry connection type | `sf-obo-connection.bicep` | `UserEntraToken` is Azure-only; other IdPs need `CustomKeys` |
+| Audience | `sf-mcp-obo-policy.xml` audiences block + `MCP_OAUTH_CLIENT_ID` env | Match IdP config |
+| Foundry connection type | `ensure_obo_connection()` in `hooks/postprovision.py` | OAuth2 works with any OIDC IdP (adjust authorize/token URLs) |
 
 ### Troubleshooting
 
@@ -251,6 +254,9 @@ The `IdentityClaimName` Named Value (default: `oid`) controls which JWT claim is
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for the Connected App | Assign user's profile to the Connected App via SetupEntityAccess |
 | 500 (KeyNotFoundException) | Certificate thumbprint wrong or missing Named Value | Verify `SF_JWT_BEARER_CERT_THUMBPRINT` matches actual cert |
 | "Missing required query parameter: audience" | `audience` missing on Foundry connection | Add `audience: 'https://ai.azure.com'` to connection properties |
+| "Cannot pass Microsoft token to untrusted MCP endpoint" | Agent wired to a UserEntraToken connection (Foundry blocks Microsoft-audience tokens to custom MCP) | Wire the MCP tool to the OAuth2 connection (`salesforce-obo-oauth2` / `servicenow-obo-oauth2`) |
+| 500 `tool_server_error` on every call, zero APIM traffic | OAuth2 connection with missing/invalid client secret | Recreate connection with valid `MCP_OAUTH_CLIENT_SECRET` |
+| AADSTS50011 at user consent | Connection's redirect URI not on the OAuth app | Add redirect to app `web.redirectUris` (`_register_connection_redirect`) |
 
 ### SF Org Setup (after new Dev Trial)
 ```bash
