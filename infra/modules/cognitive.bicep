@@ -94,7 +94,7 @@ resource gpt54 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
   name: 'gpt-5.4'
   sku: {
     name: 'GlobalStandard'
-    capacity: 120
+    capacity: 250 // matches live capacity (bumped from 120 to absorb agent E2E bursts without 429s)
   }
   properties: {
     model: {
