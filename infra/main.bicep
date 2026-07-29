@@ -29,6 +29,9 @@ param sfServiceAccountUsername string = ''
 @description('Name of the JWT claim containing the user identity (oid for Azure AD, sub for Okta/PingFed)')
 param identityClaimName string = 'oid'
 
+@description('Client ID of the Entra app backing Foundry OAuth2 identity-passthrough MCP connections')
+param mcpOauthClientId string = ''
+
 @description('Foundry-managed identity client ID for Bot Service (set by postprovision)')
 param agentBotMsaAppId string = ''
 
@@ -232,6 +235,7 @@ module apimSfMcpObo 'modules/apim-sf-mcp-obo.bicep' = {
     sfJwtBearerCertThumbprint: sfJwtBearerCertThumbprint
     sfServiceAccountUsername: sfServiceAccountUsername
     identityClaimName: identityClaimName
+    mcpOauthClientId: mcpOauthClientId
   }
 }
 
@@ -287,16 +291,10 @@ module chatAppSubscriptionReader 'modules/subscription-role-assignment.bicep' = 
   }
 }
 
-// OBO connection: passes Azure AD token through to APIM
-module sfOboConnection 'modules/sf-obo-connection.bicep' = {
-  name: 'sf-obo-connection'
-  scope: rg
-  params: {
-    cognitiveAccountName: cognitive.outputs.cognitiveAccountName
-    projectName: cognitive.outputs.projectName
-    sfMcpOboEndpoint: apimSfMcpObo.outputs.sfMcpOboEndpoint
-  }
-}
+// OBO connection: created by hooks/postprovision.py (ensure_obo_connection) as
+// an OAuth2 identity-passthrough connection. NOT created in Bicep: UserEntraToken
+// is rejected by Foundry for custom MCP endpoints, and the OAuth2 variant needs
+// a client secret + per-connection redirect registration that Bicep can't do.
 
 // Grant APIM access to Key Vault certificates for JWT signing
 module keyvaultApimAccess 'modules/keyvault.bicep' = {
@@ -362,7 +360,9 @@ output CHAT_APP_FQDN string = chatApp.outputs.chatAppFqdn
 output CHAT_APP_CONTAINER_APP_NAME string = chatApp.outputs.chatAppName
 output SF_MCP_CONTAINER_APP_NAME string = sfMcpApp.outputs.sfMcpAppName
 output SF_MCP_FQDN string = sfMcpApp.outputs.sfMcpFqdn
-output SF_OBO_CONNECTION_NAME string = sfOboConnection.outputs.connectionName
+// Connection is created by the postprovision hook (OAuth2), not Bicep — this
+// output pins the name the hook and agents use.
+output SF_OBO_CONNECTION_NAME string = 'salesforce-obo-oauth2'
 output APIM_SF_MCP_OBO_ENDPOINT string = apimSfMcpObo.outputs.sfMcpOboEndpoint
 output KEY_VAULT_NAME string = keyvault.outputs.keyVaultName
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.logAnalyticsWorkspaceGuid

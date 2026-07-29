@@ -35,6 +35,9 @@ param sfServiceAccountUsername string = ''
 @description('Name of the JWT claim containing the user identity (e.g., oid for Azure AD, sub for Okta/PingFed)')
 param identityClaimName string = 'oid'
 
+@description('Client ID of the Entra app used by Foundry OAuth2 identity-passthrough MCP connections (validate-jwt accepts audience api://<this>)')
+param mcpOauthClientId string = ''
+
 // --------------------------------------------------------------------------
 // Reference existing APIM instance
 // --------------------------------------------------------------------------
@@ -115,6 +118,18 @@ resource identityClaimNameNV 'Microsoft.ApiManagement/service/namedValues@2024-0
   }
 }
 
+// Always created (the policy references it); 'not-configured' yields the inert
+// audience api://not-configured until MCP_OAUTH_CLIENT_ID is set.
+resource mcpOauthClientIdNV 'Microsoft.ApiManagement/service/namedValues@2024-06-01-preview' = {
+  parent: apim
+  name: 'McpOauthClientId'
+  properties: {
+    displayName: 'McpOauthClientId'
+    value: !empty(mcpOauthClientId) ? mcpOauthClientId : 'not-configured'
+    secret: false
+  }
+}
+
 // --------------------------------------------------------------------------
 // Backend — points APIM to the SF MCP Container App
 // --------------------------------------------------------------------------
@@ -171,6 +186,7 @@ resource sfMcpOboApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-0
     sfJwtBearerCertThumbprintNV
     sfServiceAccountUsernameNV
     identityClaimNameNV
+    mcpOauthClientIdNV
   ]
 }
 

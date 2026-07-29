@@ -15,6 +15,10 @@
             output-token-variable-name="jwt">
             <openid-config url="https://login.microsoftonline.com/{{TenantId}}/v2.0/.well-known/openid-configuration" />
             <audiences>
+                <!-- OAuth2 identity-passthrough connections (Foundry -> custom MCP)
+                     send tokens for the MCP OAuth app. The legacy ai.azure.com
+                     audience is kept for backward compatibility only. -->
+                <audience>api://{{McpOauthClientId}}</audience>
                 <audience>https://ai.azure.com</audience>
             </audiences>
             <!-- Accept both v1 (sts.windows.net) and v2 (login.microsoftonline.com) issuers. -->
@@ -296,8 +300,40 @@
     <on-error>
         <base />
         <choose>
-            <!-- Only handle SF backend 401s (token expired). Skip if validate-jwt
-                 failed — sfUsername won't exist, and the 401 should pass through as-is. -->
+            <!-- Surface the REAL reason for a validate-jwt failure (TokenExpired,
+                 TokenInvalidAudience, TokenNotPresent, TokenSignatureKeyNotFound, ...)
+                 instead of the generic failed-validation-error-message. Only the
+                 reason/expiry are echoed back — never audience/issuer details, since
+                 this endpoint is public. Full diagnostics remain in Log Analytics. -->
+            <when condition="@(context.LastError != null && context.LastError.Source == "validate-jwt")">
+                <return-response>
+                    <set-status code="401" reason="Unauthorized" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="X-Auth-Error-Reason" exists-action="override">
+                        <value>@(context.LastError.Reason)</value>
+                    </set-header>
+                    <set-body>@{
+                        var reason = context.LastError.Reason;
+                        var message = reason == "TokenExpired"
+                            ? "The connection's Azure AD token has expired. Start a NEW conversation and complete the consent link to re-authenticate."
+                            : "Azure AD token validation failed: " + reason + ". Re-authenticate or verify the token audience/issuer.";
+                        var body = new Dictionary<string, object> {
+                            { "statusCode", 401 },
+                            { "error", reason },
+                            { "message", message },
+                            { "requestId", context.RequestId.ToString() }
+                        };
+                        if (reason == "TokenExpired") {
+                            body["detail"] = context.LastError.Message;
+                        }
+                        return JsonConvert.SerializeObject(body);
+                    }</set-body>
+                </return-response>
+            </when>
+            <!-- Only handle SF backend 401s (token expired) here — validate-jwt
+                 failures are handled above. -->
             <when condition="@(context.Variables.ContainsKey("sfUsername") && context.Response != null && context.Response.StatusCode == 401)">
                 <cache-remove-value key="@("sf-token-" + (string)context.Variables["sfUsername"])" />
                 <return-response>

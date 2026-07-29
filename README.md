@@ -28,6 +28,8 @@ If the agent can do everything in Salesforce, it must operate under the user's o
 
 A metadata-driven MCP server that solves both problems: seven tools that let an AI agent discover objects, learn field schemas, and construct SOQL queries at runtime (the meta-tool pattern), with true On-Behalf-Of identity propagation that enforces the user's own permissions end-to-end. The user authenticates once to Azure AD; the system handles the rest.
 
+> **v2 (2026-07) — OAuth2 identity passthrough.** Foundry Agent Service now [blocks Microsoft-audience tokens to custom MCP endpoints](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough) (`Cannot pass Microsoft token to untrusted MCP endpoint`), which killed the original `UserEntraToken` connection. v2 switches to an OAuth2 identity-passthrough connection backed by your own Entra app — one-time consent per user, same three-phase OBO exchange. Full rationale and migration: [CHANGELOG.md](CHANGELOG.md).
+
 ```
 azd up   # deploys the full stack in ~15 minutes
 ```
@@ -47,7 +49,7 @@ The user asks a question. The agent discovers objects, learns schemas, and queri
 
 ### On-Behalf-Of (OBO) Token Exchange
 
-APIM handles a three-phase exchange: validate the Azure AD JWT, resolve the Salesforce username, and acquire a per-user Salesforce token. The MCP server never sees Azure AD credentials.
+APIM handles a three-phase exchange: validate the Azure AD JWT, resolve the Salesforce username, and acquire a per-user Salesforce token. The MCP server never sees Azure AD credentials. Foundry obtains the user's delegated token through an OAuth2 identity-passthrough connection against a customer-owned Entra app (one-time consent per user) — Agent Service [no longer forwards Microsoft-audience tokens](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough) to custom MCP endpoints.
 
 <table><tr>
 <td><img src="docs/diagrams/obo-token-exchange-overview.gif" alt="OBO Token Exchange — Animated"></td>
@@ -119,6 +121,11 @@ azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<connected-app-consumer-key>"
 azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
 
+# v2: Entra app backing the OAuth2 identity-passthrough connection
+# (create it first -- see docs/installation.md Phase 3)
+azd env set MCP_OAUTH_CLIENT_ID "<mcp-oauth-app-id>"
+azd env set MCP_OAUTH_CLIENT_SECRET "<mcp-oauth-app-secret>"
+
 azd up
 ```
 
@@ -130,11 +137,13 @@ After `azd up` completes, open the Chat App URL printed at the end. Sign in with
 
 1. **Generate certificate** — see [installation guide Phase 1](docs/installation.md#phase-1-generate-x509-certificate)
 2. **Salesforce setup** — see [installation guide Phase 2](docs/installation.md#phase-2-salesforce-org-setup)
-3. **Set environment variables** (3 vars — no thumbprint needed):
+3. **Set environment variables** (5 vars — no thumbprint needed):
    ```bash
    azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
    azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
    azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc@your-org.my.salesforce.com>"
+   azd env set MCP_OAUTH_CLIENT_ID "<mcp-oauth-app-id>"       # v2 -- see installation guide Phase 3
+   azd env set MCP_OAUTH_CLIENT_SECRET "<mcp-oauth-app-secret>"
    ```
 4. **Deploy:** `azd up`
 5. **Map user identities** — see [installation guide Phase 4](docs/installation.md#phase-4-map-user-identities)
@@ -146,6 +155,8 @@ After `azd up` completes, open the Chat App URL printed at the end. Sign in with
 | `SF_INSTANCE_URL` | Yes | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
 | `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
 | `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL user lookups |
+| `MCP_OAUTH_CLIENT_ID` | Yes (v2) | Entra app backing the OAuth2 identity-passthrough connection (exposes `api://<appId>/access_as_user`) |
+| `MCP_OAUTH_CLIENT_SECRET` | Yes (v2) | Client secret of that Entra app (consumed by the Foundry connection) |
 | `SF_JWT_BEARER_CERT_THUMBPRINT` | Auto | Auto-set by postprovision hook; only set manually if skipping cert upload |
 | `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
 | `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
@@ -190,6 +201,8 @@ salesforce-meta-tool-identity-propagation/
 | 502 "SF Service Token Failed" | Bad certificate, wrong client ID, or service account not pre-authorized |
 | 403 "User Not Mapped" | No SF user with matching `FederationIdentifier`. Run `setup-sf-org.py --only fedid` |
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for the Connected App |
+| "Cannot pass Microsoft token to untrusted MCP endpoint" | Agent wired to a legacy `UserEntraToken` connection — use `salesforce-obo-oauth2` ([v2 migration](CHANGELOG.md#migration-from-v1-existing-deployments)) |
+| Agent asks to re-consent after ~1h | ApiHub refresh-token platform bug — start a new conversation and re-consent ([known issue](CHANGELOG.md#known-issues-platform-not-fixable-in-this-repo)) |
 
 ---
 

@@ -10,7 +10,8 @@ See also: [`obo-plan.md`](obo-plan.md) for the full OBO implementation plan.
 Always prioritize Bicep for Azure resource creation. The post-provision hook (`hooks/postprovision.py`) is for:
 - **Step 0: Certificate upload + APIM binding** — uploads `certs/sf-jwt-bearer.pfx` to Key Vault, creates APIM cert binding via ARM REST, sets `SF_JWT_BEARER_CERT_THUMBPRINT`. Bicep cert module is conditional (`!empty(sfJwtBearerCertThumbprint)`) to allow first deploy without cert.
 - **Step 1: Entra App Registration** (Chat App SPA) — Graph Bicep extension requires `Application.ReadWrite.All` on the ARM deployment identity, unavailable in managed tenants
-- **Step 2: Foundry Agent** — no ARM resource type; SDK only
+- **Step 2: SF OBO connection** — `ensure_obo_connection()`: OAuth2 identity passthrough (create-only, never overwrites; registers the connection redirectUrl on the MCP OAuth app). Not Bicep because the connection needs a client secret + per-connection redirect registration
+- **Step 2b: Foundry Agent** — no ARM resource type; SDK only
 - **Step 5: Agent Application** — ARM control plane (`Microsoft.CognitiveServices/accounts/projects/applications`), extracts `msaAppId`
 - **Step 6: Agent Deployment** — ARM control plane, links agent version to application
 - **Step 7: Bot Service bootstrap** — first-run only via ARM REST; detects existing bots by msaAppId and adopts them. Bicep takes over on subsequent deploys.
@@ -149,7 +150,7 @@ User (browser)
   │                                ▼
   ├───────────────────────► AI Foundry (Responses API)
                                    │
-                                   ├─[UserEntraToken]──► Azure AD ──► token(aud=MCP-Gateway, appid=FoundryOAuth)
+                                   ├─[OAuth2 passthrough]─► Azure AD ─► token(aud=api://McpOauthApp)
                                    │                                        │
                                    │                                        ▼
                                    ├────────────────────────────────► APIM (validate-jwt)
@@ -162,7 +163,7 @@ User (browser)
 
 **Hop 1 — User → Chat App → Foundry:** MSAL.js acquires a token with `aud = Azure Machine Learning Services` and `appid = Chat App` (`2a7cb5b6-...`). This token authenticates to Foundry, not to APIM.
 
-**Hop 2 — Foundry → APIM:** Foundry's internal OAuth client (`propagate-id-entra`, `appid = 4659381e-...`) acquires a **separate** token with `aud` matching the MCP Gateway audience (`4438785f-...`). The user's identity (`oid`, `upn`) is preserved — Foundry performs an OBO-like exchange internally. The `UserEntraToken` connection config (`audience: 'https://ai.azure.com'`) tells Foundry what audience to request.
+**Hop 2 — Foundry → APIM:** Foundry's internal OAuth client (`propagate-id-entra`, `appid = 4659381e-...`) acquires a **separate** token with `aud` matching the MCP Gateway audience (`4438785f-...`). The user's identity (`oid`, `upn`) is preserved — Foundry performs an OBO-like exchange internally. In v1 the `UserEntraToken` connection config (`audience: 'https://ai.azure.com'`) told Foundry what audience to request. In v2 the `salesforce-obo-oauth2` connection (OAuth2 identity passthrough, scopes `api://<MCP_OAUTH_CLIENT_ID>/access_as_user` + `offline_access`) makes Foundry run an auth-code flow against our own Entra app — required since Foundry blocks Microsoft-audience tokens to custom MCP endpoints ([MS Learn](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough)).
 
 **Key implication:** The `appid` arriving at APIM is Foundry's client ID, not the Chat App's.
 
@@ -202,7 +203,7 @@ The SAML Bearer Assertion flow (`urn:ietf:params:oauth:grant-type:saml2-bearer`)
 | APIM OBO API | `apim-sf-mcp-obo.bicep` | Path: `/salesforce-mcp-obo`, type: `mcp`, backend: `sf-mcp-backend` |
 | OBO Policy | `sf-mcp-obo-policy.xml` | Uses: `TenantId`, `SfOboClientId`, `SfOboLoginUrl`, `SfJwtBearerCertThumbprint`, `SfServiceAccountUsername`, `IdentityClaimName` |
 | OBO PRM | `sf-mcp-obo-prm-policy.xml` | Uses: `APIMGatewayURL`, `TenantId` |
-| Foundry Connection | `sf-obo-connection.bicep` | `authType: UserEntraToken`, `audience: https://ai.azure.com` |
+| Foundry Connection | `ensure_obo_connection()` in `hooks/postprovision.py` | `authType: OAuth2` (`salesforce-obo-oauth2`), scopes `api://<app>/access_as_user` + `offline_access` |
 | KV Certificate | `apim-jwt-bearer-cert.bicep` | Referenced by thumbprint: `context.Deployment.Certificates["{{SfJwtBearerCertThumbprint}}"]` |
 | KV RBAC | `keyvault.bicep` | Key Vault Secrets User for APIM managed identity |
 | App Insights | `cognitive.bicep` | Account-level connection, shared to all projects |
@@ -232,7 +233,7 @@ The SAML Bearer Assertion flow (`urn:ietf:params:oauth:grant-type:saml2-bearer`)
 - SF Login History shows per-user "Remote Access 2.0 / Success" entries
 - Caching minimizes latency (warm user: ~0ms overhead)
 - Error recovery (cache eviction on 401) is automatic
-- `UserEntraToken` connection type works with `audience: https://ai.azure.com`
+- v1: `UserEntraToken` connection type worked with `audience: https://ai.azure.com` — **dead since 2026-05-22** (`Cannot pass Microsoft token to untrusted MCP endpoint`); v2 uses OAuth2 identity passthrough (verified 2026-07-29, see CHANGELOG.md)
 
 ### Remaining Items
 

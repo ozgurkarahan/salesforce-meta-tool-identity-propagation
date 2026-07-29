@@ -67,8 +67,10 @@ agents, not for initial publishing.
 
 ```
 1. User sends message in Teams/Copilot
-2. Foundry acquires user's Entra token via SSO (aud=https://ai.azure.com)
-3. Foundry passes user token via UserEntraToken connection to APIM
+2. Foundry acquires the user's delegated token via the salesforce-obo-oauth2
+   connection (OAuth2 identity passthrough, aud=api://<MCP OAuth app>;
+   one-time consent per user)
+3. Foundry sends that token to APIM
 4. APIM validates token, performs 3-phase OBO exchange:
    a. Service account JWT Bearer -> SF service token
    b. SOQL lookup: FederationIdentifier (oid) -> SF Username

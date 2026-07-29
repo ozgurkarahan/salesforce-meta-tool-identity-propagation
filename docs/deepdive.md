@@ -116,7 +116,7 @@ User (browser)
   |                                v
   +--------------------------> AI Foundry (Responses API)
                                    |
-                                   +-[UserEntraToken]--> Azure AD --> token(aud=MCP-Gateway)
+                                   +-[OAuth2 passthrough]-> Azure AD -> token(aud=api://<MCP OAuth app>)
                                    |                                        |
                                    |                                        v
                                    +--------------------------------------> APIM (validate-jwt)
@@ -138,9 +138,11 @@ Here is what happens when a user sends a message, traced through every authentic
 
 **2. Chat App forwards to AI Foundry.** The Chat App passes the user's token to AI Foundry via `UserTokenCredential`. Foundry preserves the user's identity (`oid`, `upn`) through its internal OBO-like exchange.
 
-**3. Foundry acquires an APIM-audience token.** Foundry's OAuth client acquires a separate token scoped to the MCP Gateway audience (`aud=https://ai.azure.com`). The user's `oid` and `upn` claims are carried forward.
+**3. Foundry acquires a delegated token for the MCP gateway.** The `salesforce-obo-oauth2` connection runs a standard OAuth2 authorization-code flow against a customer-owned Entra app (`MCP_OAUTH_CLIENT_ID`), requesting scopes `api://<appId>/access_as_user` + `offline_access`. The first call per user returns a consent link (one-time); afterwards Foundry sends a token with `aud=api://<MCP OAuth app>` carrying the user's `oid` and `upn` claims.
 
-**4. APIM validates the Azure AD JWT.** The `validate-jwt` policy checks the token against both v1 (`sts.windows.net`) and v2 (`login.microsoftonline.com`) issuers and the expected audience. The user's `oid` is extracted.
+> **Why not just forward the user's Entra token (v1)?** Foundry Agent Service now [blocks tokens scoped to known Microsoft audiences from reaching custom MCP servers](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough): *"Your custom MCP server must be registered with an audience that you control rather than a known Microsoft audience."* Attempting it fails with `Cannot pass Microsoft token to untrusted MCP endpoint`. See [CHANGELOG.md](../CHANGELOG.md) for the full v1→v2 rationale.
+
+**4. APIM validates the Azure AD JWT.** The `validate-jwt` policy checks the token against both v1 (`sts.windows.net`) and v2 (`login.microsoftonline.com`) issuers and the expected audience `api://{{McpOauthClientId}}` (the legacy `https://ai.azure.com` audience is accepted for backward compatibility only). The user's `oid` is extracted. On failure, the real reason (`TokenExpired`, `TokenInvalidAudience`, ...) is returned as JSON plus an `X-Auth-Error-Reason` header.
 
 **5. APIM resolves the Salesforce username.** APIM checks its cache for `sf-username-{oid}`. On miss: a service account token runs `SELECT Username FROM User WHERE FederationIdentifier = '{oid}'` against Salesforce. The result is cached for 1 hour.
 
@@ -200,8 +202,8 @@ The On-Behalf-Of (OBO) architecture is not locked to Azure AD. The `IdentityClai
 | OIDC discovery URL | `sf-mcp-obo-policy.xml` | Point to PingFed, Okta, or other OIDC endpoint |
 | Issuer validation | `sf-mcp-obo-policy.xml` | Update to new issuer(s) |
 | Identity claim name | `IDENTITY_CLAIM_NAME` env var | `oid` -> `sub` or a custom claim |
-| Audience | `sf-mcp-obo-policy.xml` | Match IdP configuration |
-| Foundry connection type | `sf-obo-connection.bicep` | `UserEntraToken` is Azure-only; other IdPs need `CustomKeys` |
+| Audience | `sf-mcp-obo-policy.xml` audiences block + `MCP_OAUTH_CLIENT_ID` env | Match IdP configuration |
+| Foundry connection | `ensure_obo_connection()` in `hooks/postprovision.py` | OAuth2 authorization-code flow works with any OIDC IdP — adjust `authorizationUrl`/`tokenUrl` |
 
 The MCP server and Salesforce Connected App configuration remain unchanged. Only the APIM policy and Foundry connection need updating.
 
@@ -372,6 +374,7 @@ This project is a proof of concept. Before using in production, consider:
 
 - **Destructive operations**: There are no confirmation prompts or audit logs on `write_record` delete operations. Add guardrails appropriate to your org's governance requirements.
 - **Token expiry mid-workflow**: APIM caches tokens for 30 minutes and auto-evicts on 401. Long-running workflows may need to retry.
+- **Per-user re-consent (~1h) — platform bug**: the ApiHub connector behind Foundry OAuth2 connections stores the `offline_access` refresh token but never uses it. After access-token expiry the user must start a new conversation and re-consent ([public report](https://github.com/microsoft-foundry/new-foundry-portal/issues/134)). APIM's `TokenExpired` error response spells this out to the user.
 - **Certificate rotation**: The Key Vault certificate used for JWT Bearer signing has a default expiry of 365 days. Plan for rotation.
 - **Azure-specific infrastructure**: The deployment stack (APIM, AI Foundry, Container Apps) is Azure-native. Adapting this pattern to other clouds or self-hosted models requires replacing the infrastructure layer, though the [IdP flexibility](#idp-flexibility) section shows the authentication layer is modular.
 - **Rate limits**: The Salesforce REST API has per-org API call limits. High-frequency agentic workflows should account for this.
