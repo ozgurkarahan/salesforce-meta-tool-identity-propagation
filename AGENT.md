@@ -6,7 +6,7 @@ This file provides guidance to code agents when working with this repository.
 
 **Salesforce MCP OBO** — On-Behalf-Of (JWT Bearer) identity propagation for Salesforce MCP. User authenticates once to Azure AD; APIM exchanges the Azure AD token for a Salesforce token server-side via JWT Bearer flow. No Salesforce consent required. True OBO.
 
-**Status:** OBO flow is **verified end-to-end** (2026-03-01). SF Login History confirms per-user identity propagation.
+**Status:** v2 — OAuth2 identity passthrough (2026-07-29). OBO flow **verified end-to-end**; SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration.
 
 ## Architecture
 
@@ -71,7 +71,7 @@ The `salesforce-obo-oauth2` connection makes Foundry obtain the user's delegated
 - `target: https://apim-.../salesforce-mcp-obo/mcp` — send requests here
 - First call per user returns `oauth_consent_request` (one-time interactive consent); known platform bug: ApiHub stores but never uses the refresh token, so re-consent recurs after token expiry (~1h)
 
-**Do NOT use `authType: UserEntraToken`** — since 2026-05-22 Foundry blocks Microsoft-audience tokens to non-Microsoft MCP endpoints (`Cannot pass Microsoft token to untrusted MCP endpoint`). The trust list is Microsoft-managed with no customer opt-in; the check has intermittently flapped off (e.g. 2026-06-24 14:00–21:35 UTC) but always returns. Provisioning is handled by `ensure_obo_connection()` in `hooks/postprovision.py`, which never overwrites an existing connection.
+**Do NOT use `authType: UserEntraToken`** — since 2026-05-22 Foundry blocks Microsoft-audience tokens to non-Microsoft MCP endpoints (`Cannot pass Microsoft token to untrusted MCP endpoint`). The trust list is Microsoft-managed with no customer opt-in; the check has intermittently flapped off (e.g. 2026-06-24 14:00–21:35 UTC) but always returns. Officially documented in [MS Learn — Set up authentication for MCP tools](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough). Provisioning is handled by `ensure_obo_connection()` in `hooks/postprovision.py`, which never overwrites an existing connection.
 
 ## Customer 360 Agent
 
@@ -298,6 +298,7 @@ Read `~/projects/memory/agent-config/platform.md` for full platform preferences 
 
 | Document | Contents |
 |----------|----------|
+| `CHANGELOG.md` | Release notes — v2 OAuth2 migration rationale, MS Learn citation, known platform issues |
 | `~/projects/memory/wiki/projects/salesforce-meta-tool-id-prop.md` | Project-specific lessons & debugging history (single source of truth; `.ai/lessons-learned.md` was REMOVED) |
 | `.ai/project-reference.md` | Technical details, implementation caveats |
 | `~/projects/memory/agent-config/knowledge/*.md` | Cross-project domain knowledge |

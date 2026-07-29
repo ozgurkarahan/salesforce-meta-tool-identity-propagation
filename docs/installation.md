@@ -127,6 +127,23 @@ az login
 azd auth login
 ```
 
+### Create the MCP OAuth app registration (v2)
+
+Foundry obtains the user's delegated token through an **OAuth2 identity-passthrough
+connection** backed by an Entra app you own ([why — MS Learn](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough)).
+Create it once per tenant:
+
+```bash
+APP_ID=$(az ad app create --display-name mcp-oauth-passthrough --query appId -o tsv)
+az ad app update --id $APP_ID --identifier-uris "api://$APP_ID"
+# Expose the delegated scope access_as_user (portal: App registrations >
+# Expose an API > Add a scope), then create a client secret:
+SECRET=$(az ad app credential reset --id $APP_ID --append --query password -o tsv)
+```
+
+> The connection's redirect URIs are registered automatically by the
+> postprovision hook (`_register_connection_redirect`).
+
 ### Create environment and set variables
 
 ```bash
@@ -135,6 +152,8 @@ azd env new obo
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
 azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key-from-phase-2>"
 azd env set SF_SERVICE_ACCOUNT_USERNAME "<svc-username-from-phase-2>"
+azd env set MCP_OAUTH_CLIENT_ID "$APP_ID"
+azd env set MCP_OAUTH_CLIENT_SECRET "$SECRET"
 ```
 
 > You do **not** need to set `SF_JWT_BEARER_CERT_THUMBPRINT`. The postprovision hook reads it from Key Vault after uploading the cert.
@@ -154,9 +173,10 @@ This is a single-pass deployment. Here's what happens:
 3. **Postprovision hook runs** (~2 min) — these are **Post-Deploy Steps** (separate from the SF Setup Steps above):
    - **Post-Deploy 0:** Uploads `certs/sf-jwt-bearer.pfx` to Key Vault, creates the APIM certificate binding, and sets `SF_JWT_BEARER_CERT_THUMBPRINT` in the azd environment.
    - **Post-Deploy 1:** Creates Chat App Entra app registration (SPA with MSAL.js redirect URIs).
-   - **Post-Deploy 2:** Creates the Foundry agent with Salesforce MCP tool configuration.
+   - **Post-Deploy 2:** Ensures the `salesforce-obo-oauth2` connection exists (OAuth2 identity passthrough; **create-only** — an existing connection is never overwritten) and registers its redirect URI on the MCP OAuth app.
+   - **Post-Deploy 2b:** Creates the Foundry agent wired to that connection.
    - **Post-Deploy 3:** Updates Chat App Container App with Entra client ID and tenant ID.
-   - **Post-Deploy 4:** Recreates OBO connection via ARM REST and updates APIM Named Values.
+   - **Post-Deploy 4b:** Updates APIM Named Values.
 
 ### What to expect
 
@@ -211,8 +231,9 @@ Only users who will use the Chat App need their `FederationIdentifier` set. The 
 1. **Open the Chat App** at the URL printed after `azd up`
 2. **Sign in** with your Azure AD account
 3. **Send a message:** *"Show me my Salesforce accounts"*
-4. The agent should discover the Account object, query it, and return results
-5. **Check Salesforce Login History** (Setup > Login History) — you should see a login from your user via "Connected App" with the OBO Connected App name
+4. **First message only:** the agent returns a consent link (`oauth_consent_request`). Open it, approve the one-time OAuth consent, then ask again. (Known platform issue: after ~1h token expiry you must start a **new** conversation and re-consent — see [CHANGELOG](../CHANGELOG.md#known-issues-platform-not-fixable-in-this-repo).)
+5. The agent should discover the Account object, query it, and return results
+6. **Check Salesforce Login History** (Setup > Login History) — you should see a login from your user via "Connected App" with the OBO Connected App name
 
 If the agent responds without calling tools, check the Foundry connection target URL. If you get a 403 "User Not Mapped" error, re-run [Phase 4](#phase-4-map-user-identities).
 
@@ -278,7 +299,7 @@ When the Foundry agent calls an MCP tool, it can be configured to require user a
 Approval settings are configured on the **MCP connection** in AI Foundry, not in the MCP server itself:
 
 1. Go to **AI Foundry > Your Project > Connections**
-2. Find the `salesforce-obo` connection
+2. Find the `salesforce-obo-oauth2` connection
 3. Under **Tool approval**, choose one of:
    - **Always require approval** — Every tool call needs user consent (safest for production)
    - **Never require approval** — Tools execute immediately (fastest for development)
@@ -304,8 +325,10 @@ These logs flow to App Insights when `APPLICATIONINSIGHTS_CONNECTION_STRING` is 
 | 2 | `SF_INSTANCE_URL` | `sf org display` — instance URL |
 | 2 | `SF_CONNECTED_APP_CLIENT_ID` | `setup-sf-org.py` output — Consumer Key |
 | 2 | `SF_SERVICE_ACCOUNT_USERNAME` | `setup-sf-org.py` output — service account username |
+| 3 | `MCP_OAUTH_CLIENT_ID` | `az ad app create` output — MCP OAuth app id |
+| 3 | `MCP_OAUTH_CLIENT_SECRET` | `az ad app credential reset` output |
 
-All three are set via `azd env set` before `azd up`. The certificate thumbprint is handled automatically.
+All five are set via `azd env set` before `azd up`. The certificate thumbprint is handled automatically.
 
 ---
 
@@ -324,3 +347,7 @@ All three are set via `azd env set` before `azd up`. The certificate thumbprint 
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for Connected App | Assign user's profile to the Connected App via `setup-sf-org.py --only eca` |
 | APIM breaks MCP streaming | Response body logging enabled in APIM diagnostics | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
 | Agent responds without tools | Foundry connection misconfigured | Check connection target URL matches APIM OBO endpoint |
+| "Cannot pass Microsoft token to untrusted MCP endpoint" | Agent wired to a legacy `UserEntraToken` connection | Wire the MCP tool to `salesforce-obo-oauth2` ([why — MS Learn](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough)) |
+| AADSTS50011 at user consent | Connection redirect URI missing on the OAuth app | Re-run the hook, or add the connection's `redirectUrl` (+ `consent.azure-apim.net` variant) to the app's `web.redirectUris` |
+| 500 `tool_server_error` on every call, zero APIM traffic | OAuth2 connection has a missing/invalid client secret | Delete the connection, fix `MCP_OAUTH_CLIENT_SECRET`, re-run `azd up` |
+| 401 `TokenExpired` after ~1h | ApiHub refresh-token platform bug | Start a new conversation and complete the consent link again |

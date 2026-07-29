@@ -52,3 +52,12 @@ video-script*.md
 video-storyboard.md
 .claude/docs/article-prep/
 
+
+# Playwright MCP session artifacts
+.playwright-mcp/
+
+# Scratch/error dumps
+err_ai.txt
+
+# Internal forensic evidence (tenant IDs/UPNs -- do not publish to this public repo)
+docs/apihub-oauth2-refresh-bug-evidence.*
