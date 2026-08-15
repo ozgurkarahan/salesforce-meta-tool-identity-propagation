@@ -86,6 +86,7 @@ For detailed technical explanations, see [docs/deepdive.md](docs/deepdive.md):
 - [**IdP Flexibility**](docs/deepdive.md#idp-flexibility) — How to swap Azure AD for Okta, PingFed, or another OIDC provider
 - [**Current Scope and Limitations**](docs/deepdive.md#current-scope-and-limitations) — Production considerations
 - [**Diagram Sources**](docs/deepdive.md#diagram-sources) — Mermaid sources for both sequence diagrams
+- [**Prompt Agents: Context Isolation and Control**](docs/prompt-agents.md) — Sub-agent pattern, gateway controls, compaction, and ephemeral meta-tool results
 
 ---
 
