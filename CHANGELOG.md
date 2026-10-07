@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Infra:** `azd provision` no longer resets `ca-chat-app` / `ca-sf-mcp` to the
+  helloworld placeholder image. The modules now take an `imageName` param fed from
+  `SERVICE_CHAT_APP_IMAGE_NAME` / `SERVICE_SALESFORCE_MCP_IMAGE_NAME` (written by
+  `azd deploy`), falling back to helloworld only on a fresh environment. Previously a
+  provision-only run took the demo down with ingress timeouts (incident 2026-07-28).
+
 ## [2.0.0] - 2026-07-29
 
 ### Why this release exists
