@@ -51,20 +51,37 @@ def parse_output_items(output_items, request_id: str = ""):
     """Parse Responses API output items into a structured result.
 
     Returns:
-        dict with keys: type, text, approval_required, approval_ids
+        dict with keys: type, text, approval_required, approval_ids,
+                        consent_required, consent, tool_calls
     """
     result = {
         "type": "text",
         "text": "",
         "approval_required": False,
         "approval_ids": [],
+        "consent_required": False,
+        "consent": [],
         "tool_calls": [],
     }
 
     for item in output_items:
         item_type = getattr(item, "type", "unknown")
 
-        if item_type == "mcp_approval_request":
+        if item_type == "oauth_consent_request":
+            # First call per user per OAuth2 connection: the user must sign in once,
+            # then the same message is re-sent with previous_response_id.
+            result["type"] = "consent_required"
+            result["consent_required"] = True
+            result["consent"].append({
+                "server_label": getattr(item, "server_label", "") or "",
+                "consent_link": getattr(item, "consent_link", "") or "",
+            })
+            logger.info(
+                "oauth_consent_requested request_id=%s server=%s",
+                request_id, getattr(item, "server_label", ""),
+            )
+
+        elif item_type == "mcp_approval_request":
             result["type"] = "approval_required"
             result["approval_required"] = True
             tool_name = getattr(item, "name", "")

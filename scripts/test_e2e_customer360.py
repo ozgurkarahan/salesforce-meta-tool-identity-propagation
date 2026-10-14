@@ -301,14 +301,17 @@ def main():
             dump_output_items(output_items)
             all_servers.update(get_servers_called(output_items))
 
-            # Handle OAuth consent (first time)
-            consent_items = [
-                item for item in output_items
-                if getattr(item, "type", "") == "oauth_consent_request"
-            ]
-            if consent_items:
+            # Handle OAuth consent — one per connection (SF and SN may arrive in turn)
+            for _ in range(3):
+                consent_items = [
+                    item for item in output_items
+                    if getattr(item, "type", "") == "oauth_consent_request"
+                ]
+                if not consent_items:
+                    break
                 consent_link = getattr(consent_items[0], "consent_link", "")
-                print(f"\n  OAuth consent required: {consent_link[:100]}")
+                label = getattr(consent_items[0], "server_label", "")
+                print(f"\n  OAuth consent required ({label}): {consent_link[:100]}")
                 import webbrowser
                 try:
                     webbrowser.open(consent_link)

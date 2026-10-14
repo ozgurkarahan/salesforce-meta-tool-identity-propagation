@@ -610,57 +610,28 @@ def ensure_obo_connection():
               f"{oauth_client_id} before users consent.")
 
 
-def create_memory_store(project_client):
-    """Create the project-memory store (idempotent — get-or-create).
+# Lean system prompts (v3). Domain know-how lives in skills/<name>/SKILL.md and is
+# attached to the agents as Foundry skills; keep only role and hard rules here.
+SALESFORCE_AGENT_INSTRUCTIONS = """\
+You are a Salesforce assistant acting on behalf of the signed-in user.
+- Use your skills for how to query and update Salesforce.
+- Tell the user your plan before calling tools.
+- Always fetch fresh data with tools; never answer record questions from earlier turns alone.
+- Confirm with the user before any create, update, upsert, delete or approval action.
+- Summarize results in plain language; never dump raw JSON.
+"""
 
-    Uses text-embedding-3-small for embeddings and gpt-5.4 for chat summaries.
-    Returns the store name on success, None on failure.
-    """
-    from azure.ai.projects.models import (
-        MemoryStoreDefaultDefinition,
-        MemoryStoreDefaultOptions,
-    )
-
-    store_name = "project-memory"
-    print(f"\n  Creating memory store '{store_name}'...")
-
-    # Check if store already exists
-    try:
-        existing = project_client.memory_stores.get(name=store_name)
-        if existing:
-            print(f"  Memory store already exists: {store_name}")
-            return store_name
-    except Exception:
-        pass  # Store doesn't exist — create it
-
-    # Retry with backoff (same propagation delay as agent creation)
-    max_retries = 4
-    retry_delay = 10
-    for attempt in range(max_retries):
-        try:
-            project_client.memory_stores.create(
-                name=store_name,
-                definition=MemoryStoreDefaultDefinition(
-                    chat_model="gpt-5.4",
-                    embedding_model="text-embedding-3-small",
-                    options=MemoryStoreDefaultOptions(
-                        user_profile_enabled=True,
-                        chat_summary_enabled=True,
-                        user_profile_details="Salesforce user. Track their common objects, field names, query patterns, role, department, and error patterns.",
-                    ),
-                ),
-            )
-            print(f"  Memory store created: {store_name}")
-            return store_name
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"  Attempt {attempt + 1}/{max_retries}: {e}")
-                print(f"  Retrying in {retry_delay}s...")
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 60)
-            else:
-                print(f"  WARNING: Failed to create memory store: {e}")
-                return None
+CUSTOMER360_AGENT_INSTRUCTIONS = """\
+You are a Customer 360 assistant over Salesforce (CRM) and ServiceNow (ITSM), acting on \
+behalf of the signed-in user.
+- Use your skills for how to query each system, correlate them, and for revenue-at-risk, \
+meeting-prep and change-risk requests.
+- Tell the user what you will query in each system before calling tools.
+- Always fetch fresh data from both systems; never answer record questions from earlier turns alone.
+- Confirm with the user before any write in either system.
+- Explain what matched when you correlate records; never invent links.
+- Lead with monetary amounts; summarize in plain language, never raw JSON.
+"""
 
 
 def create_agent():
@@ -668,7 +639,7 @@ def create_agent():
 
     Uses the OBO connection (OAuth2 identity passthrough — see
     ensure_obo_connection for why UserEntraToken must not be used) and the OBO
-    APIM endpoint. Includes MemorySearchPreviewTool for per-user memory.
+    APIM endpoint.
     Returns the agent version number (for use by create_agent_deployment).
     """
     project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT")
@@ -695,7 +666,7 @@ def create_agent():
     from azure.identity import DefaultAzureCredential
     from azure.ai.projects import AIProjectClient
     from azure.ai.projects.models import (
-        PromptAgentDefinition, MCPTool, MemorySearchPreviewTool,
+        PromptAgentDefinition, MCPTool,
     )
 
     credential = DefaultAzureCredential()
@@ -730,63 +701,7 @@ def create_agent():
     sf_mcp_tool = MCPTool(**sf_tool_kwargs)
     tools = [sf_mcp_tool]
 
-    # Create memory store and add MemorySearchPreviewTool
-    store_name = create_memory_store(project_client)
-    if store_name:
-        memory_tool = MemorySearchPreviewTool(
-            memory_store_name=store_name,
-            scope="{{$userId}}",
-            update_delay=300,
-        )
-        tools.append(memory_tool)
-        print(f"  MemorySearchPreviewTool added (store={store_name}, scope=per-user)")
-
-    instructions = """\
-You are an assistant with access to Salesforce via MCP tools.
-
-## Memory
-You have access to a memory store that remembers details from past conversations with each user.
-- Memory is automatically populated from conversations. No explicit save is needed.
-- Use memory when you lack information that a past conversation might have provided \
-(e.g., user's UserId, preferred objects, common query patterns).
-- Do NOT call memory_search if the answer is already in the current conversation history.
-- ALWAYS call describe_object(mode="full") before writes regardless of memory — picklist \
-values and validation rules can change at any time.
-
-## Workflow
-1. Plan — tell the user what you intend to do before calling tools.
-2. whoami — if the user says "my" or refers to themselves, use their UserId if it is \
-already in the conversation or memory. Only call whoami if you have neither. \
-Use UserId as OwnerId or CreatedById in SOQL WHERE clauses.
-3. list_objects — find the API name (use `name`, not `label`).
-4. describe_object — REQUIRED before create/update/upsert/delete (use mode="full").
-   For reads, skip if you know the fields (from memory or prior turns), or use mode="slim" \
-to discover fields and relationships.
-   Slim returns referenceTo (lookup targets) and childRelationships (for subqueries).
-5. Execute — soql_query, search_records, write_record, or process_approval.
-6. Summarize — present results in plain language. Do NOT dump raw JSON.
-
-## Common fields (no describe needed)
-Id, Name, CreatedDate, OwnerId, LastModifiedDate — available on all standard objects.
-
-## Error recovery — CRITICAL
-- On INVALID_FIELD or MALFORMED_QUERY: the error response includes `availableFields` with \
-{name, type, referenceTo} for every field on the object. Do NOT call describe_object — \
-use availableFields to fix your query and retry immediately.
-- If a field you expected is missing from availableFields, the org restricts it. \
-Check childRelationships on the parent object for an alternative path (subquery).
-- INSUFFICIENT_ACCESS — user lacks permission. Explain clearly.
-- ENTITY_IS_DELETED — record was deleted. Inform user.
-- UNABLE_TO_LOCK_ROW — retry once after a moment.
-
-## Rules
-- Do NOT guess field names — use describe_object (slim for reads, full for writes).
-- ALWAYS confirm with the user before any create, update, upsert, or delete operation.
-  Describe the exact change (object, record, fields, values) and wait for explicit approval.
-- Always include LIMIT in SOQL unless the user specifically requests all rows.
-- All API names are PascalCase: Account, OpportunityLineItem, Custom_Field__c.
-- For subqueries use relationshipName from childRelationships, not the object name.
-"""
+    instructions = SALESFORCE_AGENT_INSTRUCTIONS
 
     # Retry with backoff — after fresh deploy, the Foundry data plane
     # takes 5-15 min to propagate. "Project not found" is transient.
@@ -888,7 +803,7 @@ def create_customer360_agent():
     from azure.identity import DefaultAzureCredential
     from azure.ai.projects import AIProjectClient
     from azure.ai.projects.models import (
-        PromptAgentDefinition, MCPTool, MemorySearchPreviewTool,
+        PromptAgentDefinition, MCPTool,
     )
 
     credential = DefaultAzureCredential()
@@ -928,73 +843,7 @@ def create_customer360_agent():
 
     tools = [sf_mcp_tool, sn_mcp_tool]
 
-    # Create memory store and add MemorySearchPreviewTool (skip if DISABLE_AGENT_MEMORY=true)
-    if os.environ.get("DISABLE_AGENT_MEMORY", "").lower() == "true":
-        print("  MemorySearchPreviewTool SKIPPED (DISABLE_AGENT_MEMORY=true)")
-    else:
-        store_name = create_memory_store(project_client)
-        if store_name:
-            memory_tool = MemorySearchPreviewTool(
-                memory_store_name=store_name,
-                scope="{{$userId}}",
-                update_delay=300,
-            )
-            tools.append(memory_tool)
-            print(f"  MemorySearchPreviewTool added (store={store_name}, scope=per-user)")
-
-    instructions = """\
-You are a Customer 360 assistant with access to Salesforce (CRM) and ServiceNow (ITSM) \
-via MCP tools. Provide a unified view of customers across both systems.
-
-## Memory
-Per-user memory is auto-populated — no explicit save needed.
-Do NOT query memory if the answer is already in the current conversation.
-NEVER answer data questions from memory alone — always call tools for fresh data. \
-Memory is for user preferences and metadata, not for record data.
-
-## Workflow
-1. Plan — tell the user what you will query in each system before calling tools.
-2. Query both systems using tools — always fetch fresh data, never rely on memory or \
-prior turns for record-level answers.
-3. Correlate by company name and synthesize a unified view.
-
-## Correlation
-- Company name: SF Account.Name = SN company field on incidents/problems/changes.
-- Keywords: SF Case.Subject/Description keywords match SN Incident short_description.
-
-## Business Insights
-- Revenue at risk: cross-reference P1/P2 incidents with SF accounts' open opportunities — \
-show pipeline value at risk. Lead with monetary amounts.
-- Case-incident correlation: SF Cases and SN Incidents for the same company with similar \
-keywords are likely the same issue from different angles.
-
-## Salesforce Rules
-- whoami: use cached UserId for "my" queries; call only if not in memory or context.
-- describe_object: REQUIRED before writes (mode="full"). Skip for reads if fields known; \
-use mode="slim" to discover fields and relationships.
-- Common fields need no describe: Id, Name, CreatedDate, OwnerId, LastModifiedDate.
-- INVALID_FIELD/MALFORMED_QUERY errors include availableFields — fix and retry, no re-describe.
-- API names are PascalCase. Always include LIMIT in SOQL. Use relationshipName for subqueries.
-
-## ServiceNow Rules
-- discover(table=...): REQUIRED before writes; optional for reads if fields known. \
-Use mode="names" for validation only; mode="compact" (default) for full metadata.
-- Skip discover(filter=...) if you already know the table name.
-- ALWAYS pass fields= to query — only the columns needed.
-- Encoded query: field=value, fieldLIKEvalue, ^(AND), ^OR, ^ORDERBYDESCfield.
-- sys_id (32-char hex) for updates/deletes.
-- 403 on discover: fall back to standard fields (short_description, priority, state, \
-urgency, impact, assignment_group, assigned_to, description, category).
-- Company lookup: use a SINGLE query with OR to cover exact and variant matches. \
-Example: company=Contoso Ltd^ORcompanyLIKEContoso. Do NOT issue separate exact and LIKE queries.
-- When querying multiple companies, combine them in one query with OR: \
-company=Acme Corp^ORcompany=Contoso Ltd^ORcompany=Northwind Traders.
-
-## Rules
-- Confirm before any write in either system.
-- When correlating, explain what matched and why.
-- Lead with monetary amounts — they drive decisions.
-"""
+    instructions = CUSTOMER360_AGENT_INSTRUCTIONS
 
     # Retry with backoff
     max_retries = 6
@@ -1053,7 +902,7 @@ company=Acme Corp^ORcompany=Contoso Ltd^ORcompany=Northwind Traders.
             except Exception as _e:
                 print(f"  WARNING: conversation starters skipped: {_e}")
             print(f"Agent created: name={agent.name}, version={final_version}, id={agent.id}")
-            print(f"  Tools: {len(tools)} tool(s) configured (SF MCP + SN MCP + Memory)")
+            print(f"  Tools: {len(tools)} tool(s) configured (SF MCP + SN MCP)")
             print(f"Agent: {agent.name} v{final_version}")
             return final_version
         except Exception as e:
