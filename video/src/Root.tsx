@@ -1,6 +1,6 @@
 import "./fonts";
 import React from "react";
-import { AbsoluteFill, Composition } from "remotion";
+import { AbsoluteFill, Composition, Still } from "remotion";
 import { linearTiming, TransitionSeries } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { Captions } from "./components/Captions";
@@ -11,6 +11,10 @@ import { Identity } from "./scenes/Identity";
 import { Close, Consent, Everywhere, Why } from "./scenes/Outro";
 import { FPS, HEIGHT, WIDTH } from "./theme";
 import { SCENES, sceneFrames, TOTAL_FRAMES, TRANSITION } from "./timeline";
+import { Extend } from "./visuals/Extend";
+import { Hero } from "./visuals/Hero";
+import { OgCard } from "./visuals/OgCard";
+import { Trust } from "./visuals/Trust";
 
 const COMPONENTS: Record<string, React.FC> = {
   hook: Hook,
@@ -48,5 +52,12 @@ export const Story: React.FC = () => (
 );
 
 export const RemotionRoot: React.FC = () => (
-  <Composition id="Customer360Story" component={Story} durationInFrames={TOTAL_FRAMES} fps={FPS} width={WIDTH} height={HEIGHT} />
+  <>
+    <Composition id="Customer360Story" component={Story} durationInFrames={TOTAL_FRAMES} fps={FPS} width={WIDTH} height={HEIGHT} />
+    {/* README and project-page visuals, rendered by `npm run visuals`. */}
+    <Still id="Hero" component={Hero} width={1200} height={600} />
+    <Still id="Trust" component={Trust} width={1200} height={560} />
+    <Still id="Extend" component={Extend} width={1200} height={600} />
+    <Still id="OgCard" component={OgCard} width={1200} height={630} />
+  </>
 );

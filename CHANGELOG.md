@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Project page:** `site/` is a Customer 360 Assistant landing page on GitHub Pages
+  (story video, plug-board diagram, identity journey, extension pattern). It is
+  deployed by `.github/workflows/pages.yml` and reachable at
+  `ozgurkarahan.com/customer-360/`.
+- **Visuals:** Remotion stills (`video/src/visuals/`, `npm run visuals`) for the
+  README hero, trust and extend diagrams, plus a 1200×630 social card.
+
+### Changed
+
+- **README:** rewritten business-first: build the engagement layer once, let one
+  agent act across all your systems of record, as the signed-in user. The
+  env-var, project-structure and troubleshooting tables moved to
+  `docs/installation.md`. Per-tool token counts are replaced by a reproducible
+  estimate from `scripts/measure-tokens.py`.
+- **Docs:** `docs/teams-integration.md` now describes the automated Teams
+  publishing path and the v2 token audience (`api://<MCP_OAUTH_CLIENT_ID>`).
+
 ### Fixed
 
 - **Infra:** `azd provision` no longer resets `ca-chat-app` / `ca-sf-mcp` to the

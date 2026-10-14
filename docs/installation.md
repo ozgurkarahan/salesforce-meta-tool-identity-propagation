@@ -347,7 +347,57 @@ All five are set via `azd env set` before `azd up`. The certificate thumbprint i
 | 502 "SF Token Exchange Failed" | Target SF user not pre-authorized for Connected App | Assign user's profile to the Connected App via `setup-sf-org.py --only eca` |
 | APIM breaks MCP streaming | Response body logging enabled in APIM diagnostics | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
 | Agent responds without tools | Foundry connection misconfigured | Check connection target URL matches APIM OBO endpoint |
-| "Cannot pass Microsoft token to untrusted MCP endpoint" | Agent wired to a legacy `UserEntraToken` connection | Wire the MCP tool to `salesforce-obo-oauth2` ([why — MS Learn](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough)) |
+| "Cannot pass Microsoft token to untrusted MCP endpoint" | Agent wired to a legacy `UserEntraToken` connection | Wire the MCP tool to `salesforce-obo-oauth2` ([why — MS Learn](https://learn.microsoft.com/azure/foundry/agents/how-to/mcp-authentication#oauth-identity-passthrough), [v2 migration](../CHANGELOG.md#migration-from-v1-existing-deployments)) |
 | AADSTS50011 at user consent | Connection redirect URI missing on the OAuth app | Re-run the hook, or add the connection's `redirectUrl` (+ `consent.azure-apim.net` variant) to the app's `web.redirectUris` |
 | 500 `tool_server_error` on every call, zero APIM traffic | OAuth2 connection has a missing/invalid client secret | Delete the connection, fix `MCP_OAUTH_CLIENT_SECRET`, re-run `azd up` |
-| 401 `TokenExpired` after ~1h | ApiHub refresh-token platform bug | Start a new conversation and complete the consent link again |
+| 401 `TokenExpired`, or the agent asks to re-consent, after ~1h | ApiHub refresh-token platform bug | Start a new conversation and complete the consent link again ([known issue](../CHANGELOG.md#known-issues-platform-not-fixable-in-this-repo)) |
+
+---
+
+## Reference: Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SF_INSTANCE_URL` | Yes | Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
+| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
+| `SF_SERVICE_ACCOUNT_USERNAME` | Yes | SF service account username for SOQL user lookups |
+| `MCP_OAUTH_CLIENT_ID` | Yes (v2) | Entra app backing the OAuth2 identity-passthrough connection (exposes `api://<appId>/access_as_user`) |
+| `MCP_OAUTH_CLIENT_SECRET` | Yes (v2) | Client secret of that Entra app (consumed by the Foundry connection) |
+| `SF_JWT_BEARER_CERT_THUMBPRINT` | Auto | Auto-set by postprovision hook; only set manually if skipping cert upload |
+| `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
+| `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
+| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid naming conflicts |
+| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`) |
+
+Teams publishing adds `TEAMS_APP_DEVELOPER_NAME`, `TEAMS_APP_PRIVACY_URL` and `TEAMS_APP_TERMS_URL` (see [Teams integration](teams-integration.md)).
+
+---
+
+## Reference: Project Structure
+
+```
+salesforce-meta-tool-identity-propagation/
++-- azure.yaml                    # azd project: 2 services (chat-app, salesforce-mcp)
++-- src/
+|   +-- salesforce-mcp/
+|   |   +-- app.py                # The MCP server: 7 tools, bearer passthrough
+|   |   +-- salesforce_client.py  # Async Salesforce REST client with auth
+|   +-- chat-app/
+|       +-- app.py                # FastAPI backend, MSAL to Foundry agent bridge
+|       +-- static/               # Vanilla JS SPA with MSAL.js
++-- infra/
+|   +-- main.bicep                # Orchestrator, all Azure resources
+|   +-- modules/                  # APIM, Key Vault, Container Apps, AI Services, ...
+|   +-- policies/
+|       +-- sf-mcp-obo-policy.xml     # OBO three-phase exchange policy
+|       +-- sf-mcp-obo-prm-policy.xml # RFC 9728 PRM for OBO endpoint
++-- hooks/
+|   +-- postprovision.py          # Cert upload + Entra app + Foundry agent + OBO connection
++-- scripts/
+|   +-- sf_utils.py               # Shared SF/CLI primitives
+|   +-- setup-sf-org.py           # Complete 5-step SF org setup orchestrator
+|   +-- test-salesforce-mcp.py    # E2E MCP server test
++-- docs/                         # Guides and architecture diagrams
++-- site/                         # Project page (GitHub Pages)
++-- video/                        # Remotion source: story video and README visuals
+```

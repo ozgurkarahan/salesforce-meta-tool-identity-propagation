@@ -10,6 +10,8 @@ export const C = {
   amber: "#C2620A",
   amberSoft: "#FFF4E4",
   amberLine: "#F0C078",
+  // Darker amber for small text (5.7:1 on amberSoft); `amber` is for large text and graphics only.
+  amberInk: "#9A4A05",
   node: "#F7F9FC",
   ok: "#1F9D6B",
   okSoft: "#E6F6EF",

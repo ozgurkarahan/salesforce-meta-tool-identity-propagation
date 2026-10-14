@@ -7,6 +7,8 @@
     "studio": "remotion studio --no-open",
     "render": "pwsh -NoProfile -File scripts/render.ps1",
     "still": "remotion still Customer360Story --scale=0.5",
+    "visuals": "pwsh -NoProfile -File scripts/render-visuals.ps1",
+    "poster": "remotion still Customer360Story ../site/media/customer360-story-v1-poster.jpg --frame=1640 --image-format=jpeg --jpeg-quality=82",
     "srt": "npx --yes tsx scripts/export-srt.ts"
   },
   "dependencies": {
