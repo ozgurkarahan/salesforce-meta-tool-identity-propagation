@@ -158,7 +158,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     }
     .board-grid {
       --gap: 3.25rem; --stub: 1.25rem; --plug-h: 4.6rem; --sock-h: 3.35rem;
-      display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.88fr) minmax(0, 0.72fr) minmax(0, 1.25fr);
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr) minmax(0, 0.8fr) minmax(0, 1.25fr);
       column-gap: var(--gap); row-gap: 1.25rem; align-items: center;
     }
     .zone { display: contents; }
@@ -188,7 +188,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
       border-radius: 26px; background: var(--azure); color: #fff; box-shadow: 0 20px 40px -20px rgba(22, 32, 47, 0.55);
     }
     .hub .i { width: 3.4rem; height: 3.4rem; }
-    .hub strong { font-family: var(--head); font-weight: 600; font-size: 1.32rem; line-height: 1.12; }
+    .hub strong { font-family: var(--head); font-weight: 600; font-size: 1.32rem; line-height: 1.12; text-wrap: balance; }
     .hub span { color: var(--azure-soft); font-size: 0.95rem; line-height: 1.4; }
 
     .gate {
@@ -196,7 +196,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
       border-radius: 22px; background: var(--amber-soft); border: 2px solid var(--amber);
     }
     .gate .i { width: 2.6rem; height: 2.6rem; color: var(--amber); }
-    .gate strong { font-family: var(--head); font-weight: 600; font-size: 1.04rem; line-height: 1.2; }
+    .gate strong { font-family: var(--head); font-weight: 600; font-size: 1.04rem; line-height: 1.2; text-wrap: balance; }
 
     .sockets { list-style: none; display: grid; gap: 0.5rem; }
     .socket {
@@ -236,12 +236,12 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
       border: 1.5px dashed var(--muted); color: var(--muted); font-size: 0.72rem; font-weight: 600;
     }
     /* Amber identity tokens resting on the wires: the user's identity travels every hop. */
-    .board .token {
+    .board .token, .crop .token {
       position: absolute; top: 50%; z-index: 1; width: 1.4rem; height: 1.4rem; margin-top: -0.7rem;
       border-radius: 6px; background: var(--amber); color: #fff; display: grid; place-items: center; outline: 3px solid var(--paper);
     }
-    .board .token .i { width: 0.85rem; height: 0.85rem; color: #fff; }
-    .board .hub .token-hosts { right: calc(100% + (var(--gap) - var(--stub)) / 2 - 0.7rem); }
+    .board .token .i, .crop .token .i { width: 0.85rem; height: 0.85rem; color: #fff; }
+    .board .hub .token-hosts, .crop .hub .token-hosts { right: calc(100% + (var(--gap) - var(--stub)) / 2 - 0.7rem); }
     .board .gate .token-in { right: calc(100% + var(--gap) / 2 - 0.7rem); }
     .board .gate .token-out { left: calc(100% + (var(--gap) - var(--stub)) / 2 - 0.7rem); }
 
@@ -334,7 +334,6 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     }
     .journey p { color: var(--muted); font-size: 0.98rem; }
     .record { display: grid; gap: 0.2rem; padding: 0.9rem 1rem; border-radius: 14px; border: 1px solid var(--line); background: #fff; box-shadow: 0 14px 28px -20px rgba(22, 32, 47, 0.45); }
-    .record-demo { font-size: 0.75rem; color: var(--muted); font-style: italic; margin-bottom: 0.3rem; }
     .record dl { display: grid; gap: 0.2rem; }
     .record dt { font-size: 0.8125rem; color: var(--muted); }
     .record dd { font-family: var(--head); font-weight: 600; }
@@ -348,10 +347,10 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     .keynote p + p { margin-top: 0.4rem; }
 
     /* Plug in your next system */
-    .table-scroll { overflow-x: auto; }
-    .plug-table { width: calc(100% + 1rem); min-width: 46rem; margin-inline: -0.5rem; border-collapse: separate; border-spacing: 0.5rem; }
+    .table-scroll { overflow-x: auto; display: grid; grid-template-columns: 8.5rem minmax(46rem, 1fr); column-gap: 2rem; }
+    .plug-table { width: calc(100% + 1rem); margin-inline: -0.5rem; border-collapse: separate; border-spacing: 0.5rem; }
     .plug-table th, .plug-table td { text-align: left; padding: 0.8rem 1rem; }
-    .plug-table thead th { padding-block: 0 0.25rem; font-family: var(--head); font-weight: 600; font-size: 1rem; vertical-align: bottom; }
+    .plug-table thead th { height: 3rem; padding-block: 0 0.25rem; font-family: var(--head); font-weight: 600; font-size: 1rem; vertical-align: bottom; white-space: nowrap; }
     .plug-table thead small { display: block; font-family: var(--body); font-weight: 400; font-size: 0.85rem; color: var(--muted); }
     .plug-table tbody th { font-family: var(--head); font-weight: 600; font-size: 1.05rem; white-space: nowrap; }
     .plug-table tbody th small { display: block; font-family: var(--body); font-weight: 400; font-size: 0.8125rem; color: var(--muted); }
@@ -361,6 +360,21 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     /* The gateway policy is the identity step, so it takes the identity colour. */
     .plug-table tbody tr.is-live > td:nth-child(3) { border-color: var(--amber-line); background: var(--amber-soft); }
     .plug-table tbody tr.is-live > td:nth-child(3) .i { color: var(--amber-ink); }
+    /* Decorative "One agent" rail beside the table; each row header wires into it. */
+    .agent-rail {
+      align-self: stretch; margin: 4.7rem 0 0.5rem; display: grid; align-content: center; justify-items: center; gap: 0.6rem;
+      padding: 1rem 0.75rem; text-align: center; border-radius: 22px; background: var(--azure); color: #fff;
+      box-shadow: 0 20px 40px -20px rgba(22, 32, 47, 0.55);
+    }
+    .agent-rail .i { width: 2.6rem; height: 2.6rem; }
+    .agent-rail strong { font-family: var(--head); font-weight: 600; font-size: 1.15rem; line-height: 1.1; }
+    .agent-rail span { font-size: 0.85rem; line-height: 1.35; color: var(--azure-soft); }
+    .plug-table tbody th { position: relative; }
+    .plug-table tbody th::before {
+      content: ""; position: absolute; right: 100%; top: 50%; width: calc(2rem + 2px); height: 2px; margin-top: -1px;
+      background: repeating-linear-gradient(90deg, var(--muted) 0 5px, transparent 5px 10px);
+    }
+    .plug-table tbody tr.is-live > th::before { background: var(--azure); }
     .plug-table td .i { display: inline-block; vertical-align: -0.2em; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; color: var(--azure); }
     .why-meta { margin-top: clamp(2rem, 4vw, 3rem); display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 1rem 3rem; align-items: start; }
     .why-meta p { color: var(--muted); }
@@ -406,7 +420,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
         content: ""; display: block; width: 14px; height: 1.6rem; margin: -2.05rem auto 0.45rem;
         background: radial-gradient(circle, var(--amber) 0 5px, transparent 5.5px) center / 14px 14px no-repeat, linear-gradient(var(--azure), var(--azure)) center / 2px 100% no-repeat;
       }
-      .board .token { display: none; }
+      .board .token, .crop .token { display: none; }
       .crop { grid-template-columns: 1fr; }
       .crop .hub { margin-top: 2.5rem; }
       .crop .hub::before {
@@ -602,6 +616,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
             </li>
           </ul>
           <div class="hub">
+            <span class="token token-hosts" aria-hidden="true"><svg class="i"><use href="#i-user"/></svg></span>
             <svg class="i" aria-hidden="true"><use href="#i-spark"/></svg>
             <strong>One Foundry agent</strong>
             <span>The same agent and the same identity, whichever host people use</span>
@@ -647,9 +662,8 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
           <li>
             <span class="step" aria-hidden="true">5</span><h3>Writes carry her name</h3>
             <div class="record">
-              <p class="record-demo">Example · demo data</p>
               <dl aria-label="Example Salesforce record">
-                <dt>Opportunity</dt><dd>Contoso Analytics Add-on</dd>
+                <dt>Opportunity · example data</dt><dd>Contoso Analytics Add-on</dd>
                 <dt>Last modified by</dt><dd class="who">Alice</dd>
               </dl>
             </div>
@@ -675,6 +689,11 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
           <p class="locator" aria-hidden="true"><span></span><span></span><span></span><span class="on"></span><span class="locator-label">Systems of record</span></p>
         </div>
         <div class="table-scroll" role="region" aria-label="What each system needs (scrollable table)" tabindex="0">
+          <div class="agent-rail" aria-hidden="true">
+            <svg class="i"><use href="#i-spark"/></svg>
+            <strong>One agent</strong>
+            <span>Same Teams experience, same identity flow</span>
+          </div>
           <table class="plug-table">
             <caption class="sr-only">What each system of record needs. Salesforce and ServiceNow are included; the others follow the same pattern and are not included.</caption>
             <thead>
@@ -692,7 +711,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
               <tr><th scope="row">Jira<small>Work tracking</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
               <tr><th scope="row">SAP<small>ERP</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
               <tr><th scope="row">Workday<small>HR</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
-              <tr><th scope="row">Your API<small>Custom system</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
+              <tr><th scope="row">Your API<small>Custom</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
             </tbody>
           </table>
         </div>
