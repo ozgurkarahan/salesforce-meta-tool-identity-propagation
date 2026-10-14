@@ -118,6 +118,25 @@ export const IconBot: React.FC<P> = ({ size = 48, color = "currentColor", stroke
   </svg>
 );
 
+export const IconGlobe: React.FC<P> = ({ size = 48, color = "currentColor", stroke = 1.7 }) => (
+  <svg {...base(size, color, stroke)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" />
+  </svg>
+);
+
+export const IconPlug: React.FC<P> = ({ size = 48, color = "currentColor", stroke = 1.7 }) => (
+  <svg {...base(size, color, stroke)}>
+    <path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" />
+  </svg>
+);
+
+export const IconWrench: React.FC<P> = ({ size = 48, color = "currentColor", stroke = 1.7 }) => (
+  <svg {...base(size, color, stroke)}>
+    <path d="M14.7 6.3a4 4 0 0 0-5.4 5.2l-5.8 5.8a1.8 1.8 0 0 0 2.5 2.5l5.8-5.8a4 4 0 0 0 5.2-5.4l-2.5 2.5-2.3-.6-.6-2.3z" />
+  </svg>
+);
+
 export const IconDatabase: React.FC<P> = ({ size = 48, color = "currentColor", stroke = 1.7 }) => (
   <svg {...base(size, color, stroke)}>
     <ellipse cx="12" cy="6" rx="7" ry="3" />

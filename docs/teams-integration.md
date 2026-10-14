@@ -5,9 +5,20 @@ using Azure AI Foundry's native publishing feature.
 
 ## Overview
 
-The agent is published directly from the Azure AI Foundry portal to Teams
-and M365 Copilot. No custom bot code is required. Foundry handles the
-channel integration, SSO, and tool approval UX natively.
+There are two ways to reach Teams. Neither needs custom bot code in the data path:
+
+- **Automated (`azd up`):** postprovision Steps 5–8 publish `salesforce-assistant`
+  as a Foundry Agent Application. They bootstrap an Azure Bot Service whose
+  messaging endpoint is Foundry's activity-protocol endpoint, then upload a Teams
+  app (1:1, group chat and team scopes) to your org catalog. This requires the
+  `TEAMS_APP_*` variables and `AppCatalog.ReadWrite.All` (see AGENT.md, *Teams
+  Publishing Prerequisites*).
+- **Foundry portal:** publish any agent, for example `customer360-assistant`, to
+  Teams **and Microsoft 365 Copilot** from the Azure AI Foundry portal (steps
+  below). This is the path that makes the agent available in Microsoft 365
+  Copilot.
+
+Foundry handles the channel integration, SSO, and tool approval UX natively.
 
 **Validated:** OBO identity propagation works end-to-end through the
 Foundry-published Teams/Copilot channel. Per-user Salesforce identity is
@@ -90,7 +101,9 @@ This is configured via `require_approval: "always"` on the agent's MCP tool.
 When published via Foundry, the agent gets its own dedicated Entra identity.
 This changes the `appid` claim in tokens but does NOT break OBO because:
 
-- The APIM policy validates `aud=https://ai.azure.com` (not `appid`)
+- The APIM policy validates the audience `api://<MCP_OAUTH_CLIENT_ID>` (v2 OAuth2
+  identity passthrough; `https://ai.azure.com` is still accepted for backward
+  compatibility only), not `appid`
 - The user's `oid` is preserved in the token (identity propagation intact)
 - The 3-phase OBO exchange uses `oid` to look up the SF username
 
@@ -100,7 +113,7 @@ This changes the `appid` claim in tokens but does NOT break OBO because:
 |---------|-------|-----|
 | "Publish failed" in M365 Admin Center | Wrong publishing location | Publish from AI Foundry portal, not M365 Admin Center |
 | `Microsoft.BotService` not registered | Resource provider not registered | `az provider register --namespace Microsoft.BotService` |
-| 401/403 at APIM | Token audience mismatch | Check `aud` claim; should be `https://ai.azure.com` |
+| 401/403 at APIM | Token audience mismatch | Check the `aud` claim: it should be `api://<MCP_OAUTH_CLIENT_ID>` (v2). The `X-Auth-Error-Reason` header gives the exact cause |
 | No Salesforce data | OBO flow broken | Check APIM logs, verify SF Login History |
 | Tool calls denied by SF | Correct behavior | OBO identity propagation working; user lacks SF permissions |
 

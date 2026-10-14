@@ -203,6 +203,13 @@ azd up
 - `scripts/setup-sf-org.py` — Complete 5-step SF org setup orchestrator (Connected App, SSO, Demo User, Service Account, Federation IDs)
 - `scripts/test-salesforce-mcp.py` — E2E MCP server test
 
+**README, project page & media:**
+- `README.md` — business-first: story → plug board → value → asks → trust → extend; technical depth starts at "For Architects and Developers". Env vars, project tree and troubleshooting live in `docs/installation.md` (Reference sections + Common Issues)
+- `site/` — GitHub Pages project page (static, no build step), deployed by `.github/workflows/pages.yml` (PRs: offline lychee + artifact only). Live at `https://ozgurkarahan.github.io/salesforce-meta-tool-identity-propagation/`; short URL `https://ozgurkarahan.com/customer-360/` is a redirect stub in the `ozgurkarahan/ozgurkarahan` repo
+- `video/src/visuals/` — Remotion stills for the README/page/social card; `cd video && npm run visuals` → `site/assets/visuals/*.png` + `site/assets/og-image.png` (size and budget checked); `npm run poster` → video poster
+- `site/media/customer360-story-v1.mp4` — committed story render; bump the `-v1` suffix (MP4, poster, `site/index.html`) on re-render, and keep the page transcript in sync with `video/src/timeline.ts`
+- `PRODUCT.md` — product truth used by the impeccable design skill (claims rules: no unmeasured numbers; Jira/SAP/Workday = "same pattern", not included)
+
 ### OBO Prerequisites (Salesforce side)
 
 All SF setup is handled by `scripts/setup-sf-org.py`:

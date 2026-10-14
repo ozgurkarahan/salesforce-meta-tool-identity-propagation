@@ -1,0 +1,823 @@
+<!doctype html>
+<!--
+THESIS: The page is a plug board. Hosts plug in once on the left, one agent sits in the middle, systems of record plug in on the right, and the user's identity runs through every wire. It refuses the category's hero + three feature cards + logo strip.
+OWN-WORLD: The Build style of the story video: white paper, Azure #0F6CBD for the agent and live wires, amber reserved for the user's identity, hairline node cards with 14-26px radii, dashed outlines for systems you add. Bricolage Grotesque display, Instrument Sans text, IBM Plex Mono only for code and repository names.
+STORY: Visitors grasp "build once, one agent, act as the user", watch the 2:40 proof, see the trust mechanics and the plug-in pattern, then deploy or read further.
+FIRST VIEWPORT: Full-width two-part headline; the lede and the actions share one row beneath it; the plug board starts above the fold. "Watch the 2:40 story" is the primary action.
+FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels the wires once; seed 2e1b3c0a.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Customer 360 Assistant: one agent across all your systems of record</title>
+  <meta name="description" content="Build the engagement layer once in Microsoft Teams and let one Microsoft Foundry agent act across Salesforce, ServiceNow and your other systems of record, always as the signed-in user. An open-source reference implementation.">
+  <meta name="author" content="Ozgur Karahan">
+  <meta name="theme-color" content="#0F6CBD">
+  <link rel="canonical" href="https://ozgurkarahan.github.io/salesforce-meta-tool-identity-propagation/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Ozgur Karahan">
+  <meta property="og:url" content="https://ozgurkarahan.github.io/salesforce-meta-tool-identity-propagation/">
+  <meta property="og:title" content="Build the engagement layer once. Let one agent act across all your systems of record.">
+  <meta property="og:description" content="Customer 360 Assistant: one Microsoft Foundry agent in Teams acts across Salesforce, ServiceNow and your next system, always as the signed-in user. Open source.">
+  <meta property="og:image" content="https://ozgurkarahan.github.io/salesforce-meta-tool-identity-propagation/assets/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Build the engagement layer once. Let one agent act across all your systems of record. Microsoft Teams, one Foundry agent, Salesforce, ServiceNow and your next system, acting as the signed-in user.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/bricolage-grotesque-latin-800-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/instrument-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareSourceCode",
+      "name": "Customer 360 Assistant",
+      "description": "Reference implementation: one Microsoft Foundry agent in Teams acts across Salesforce, ServiceNow and other systems of record as the signed-in user.",
+      "codeRepository": "https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation",
+      "license": "https://opensource.org/licenses/MIT",
+      "programmingLanguage": ["Python", "Bicep"],
+      "author": { "@type": "Person", "name": "Ozgur Karahan", "url": "https://ozgurkarahan.com/" }
+    }
+  </script>
+  <style>
+    @font-face { font-family: "Bricolage Grotesque"; font-style: normal; font-weight: 600; font-display: swap; src: url("assets/fonts/bricolage-grotesque-latin-600-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Bricolage Grotesque"; font-style: normal; font-weight: 800; font-display: swap; src: url("assets/fonts/bricolage-grotesque-latin-800-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Instrument Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("assets/fonts/instrument-sans-latin-400-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Instrument Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("assets/fonts/instrument-sans-latin-500-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Instrument Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("assets/fonts/instrument-sans-latin-600-normal.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("assets/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); }
+
+    :root {
+      color-scheme: light;
+      --paper: #ffffff;
+      --bg: #edf1f7;
+      --ink: #16202f;
+      --muted: #53617a;
+      --line: #e2e8f2;
+      --node: #f7f9fc;
+      --azure: #0f6cbd;
+      --azure-deep: #0b5596;
+      --azure-soft: #eaf3fc;
+      --azure-line: #bbd7f0;
+      --amber: #c2620a;
+      --amber-ink: #9a4a05;
+      --amber-soft: #fff4e4;
+      --amber-line: #f0c078;
+      --teams: #5b5fc7;
+      --teams-soft: #ebebf8;
+      --head: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+      --body: "Instrument Sans", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+      --wrap: 1200px;
+      --pad: clamp(1.25rem, 4vw, 3rem);
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 400 1.0625rem/1.6 var(--body);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    img, video, svg { display: block; max-width: 100%; }
+    img, video { height: auto; }
+    a { color: var(--azure); text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+    a:hover { color: var(--azure-deep); text-decoration-thickness: 2px; }
+    :focus-visible { outline: 3px solid var(--azure-deep); outline-offset: 3px; border-radius: 6px; }
+    h1, h2, h3 { margin: 0; font-family: var(--head); text-wrap: balance; }
+    p, ul, ol, figure, dl, dd { margin: 0; }
+    ul, ol { padding: 0; }
+    p { text-wrap: pretty; }
+    code { font-family: var(--mono); font-size: 0.9em; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+    .i { width: 1.25rem; height: 1.25rem; flex: none; }
+
+    .skip-link {
+      position: absolute; left: 1rem; top: -4rem; z-index: 10;
+      padding: 0.6rem 1rem; border-radius: 10px; background: var(--ink); color: #fff; font-weight: 600;
+    }
+    .skip-link:focus { top: 1rem; color: #fff; }
+
+    .wrap { max-width: var(--wrap); margin: 0 auto; padding-inline: var(--pad); }
+
+    /* Top bar */
+    .topbar { border-bottom: 1px solid var(--line); }
+    .topbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 4rem; }
+    .topbar a { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 44px; color: var(--muted); font-weight: 500; text-decoration: none; }
+    .topbar a:hover { color: var(--ink); }
+    .brand { display: inline-flex; align-items: center; gap: 0.6rem; font-family: var(--head); font-weight: 600; font-size: 1.05rem; }
+    .brand-mark { width: 1.6rem; height: 1.6rem; border-radius: 0.45rem; background: var(--azure); color: #fff; display: grid; place-items: center; }
+    .brand-mark .i { width: 1rem; height: 1rem; }
+
+    /* Shared section rhythm: more space above a heading than below it */
+    .section { padding-top: clamp(5rem, 10vw, 8rem); }
+    .section-head { display: grid; gap: 1.1rem; margin-bottom: clamp(2rem, 4vw, 3rem); }
+    .section-head-split { grid-template-columns: minmax(0, 1fr) auto; align-items: end; column-gap: 3rem; }
+    .section-head-split > .section-head { margin-bottom: 0; }
+    h2 { font-weight: 800; font-size: clamp(2rem, 3.6vw, 3.05rem); line-height: 1.05; letter-spacing: -0.025em; }
+    h3 { font-weight: 600; font-size: 1.2rem; line-height: 1.2; }
+    .intro { max-width: 64ch; color: var(--muted); font-size: 1.125rem; }
+    .fine { font-size: 0.9375rem; color: var(--muted); }
+
+    /* Board locator: which part of the plug board a section explains */
+    .locator { display: flex; gap: 0.3rem; align-items: center; }
+    .locator > span:not(.locator-label) { width: 2.6rem; height: 0.7rem; border-radius: 999px; background: var(--line); }
+    .locator > span.on { background: var(--azure); }
+    .locator > span.on-id { background: var(--amber); }
+    .locator-label { margin-left: 0.6rem; font-size: 0.875rem; color: var(--muted); white-space: nowrap; }
+
+    /* Hero */
+    .hero { padding-top: clamp(2.5rem, 5vw, 3.75rem); }
+    .hero-head { display: grid; gap: 1.6rem; }
+    h1 { font-weight: 800; font-size: clamp(2.4rem, 4.4vw, 3.95rem); line-height: 1.02; letter-spacing: -0.03em; }
+    h1 span { display: block; color: var(--azure); }
+    .hero-side { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 1.25rem 3rem; }
+    .lede { max-width: 60ch; font-size: clamp(1.1rem, 1.35vw, 1.22rem); color: var(--muted); }
+    .lede strong { color: var(--ink); }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.6rem; min-height: 48px; padding: 0 1.3rem;
+      border-radius: 12px; font-weight: 600; text-decoration: none; transition: background-color 0.2s var(--ease), box-shadow 0.2s var(--ease), color 0.2s var(--ease);
+    }
+    .btn-primary { background: var(--azure); color: #fff; box-shadow: 0 10px 22px -12px rgba(22, 32, 47, 0.5); }
+    .btn-primary:hover { background: var(--azure-deep); color: #fff; }
+    .btn-quiet { color: var(--ink); border: 1.5px solid var(--line); background: #fff; }
+    .btn-quiet:hover { color: var(--ink); border-color: var(--azure-line); background: var(--azure-soft); }
+
+    /* The plug board */
+    .board {
+      position: relative; margin-top: clamp(2rem, 4vw, 3rem); padding: clamp(1.25rem, 2.4vw, 2.1rem);
+      border: 1px solid var(--line); border-radius: 28px;
+      background: radial-gradient(70% 60% at 100% 0%, var(--azure-soft) 0%, rgba(234, 243, 252, 0) 70%), var(--paper);
+      box-shadow: 0 28px 60px -36px rgba(22, 32, 47, 0.35);
+    }
+    .board-grid {
+      --gap: 3.25rem; --stub: 1.25rem; --plug-h: 4.6rem; --sock-h: 3.35rem;
+      display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.84fr) minmax(0, 0.8fr) minmax(0, 1.2fr);
+      column-gap: var(--gap); row-gap: 1.25rem; align-items: center;
+    }
+    .zone { display: contents; }
+    .zone-head { grid-row: 1; align-self: end; }
+    .zone-title { font-family: var(--head); font-weight: 600; font-size: 1.12rem; line-height: 1.15; }
+    .zone-sub { font-size: 0.9rem; color: var(--muted); }
+    .zone-hosts > * { grid-column: 1; }
+    .zone-agent > * { grid-column: 2; }
+    .zone-gateway > * { grid-column: 3; }
+    .zone-systems > * { grid-column: 4; }
+    .plugs, .hub, .gate, .sockets { position: relative; }
+    .board-grid .plugs, .board-grid .hub, .board-grid .gate, .board-grid .sockets { grid-row: 2; }
+
+    .plugs { list-style: none; display: grid; gap: 0.75rem; }
+    .plug {
+      position: relative; display: flex; align-items: center; gap: 0.85rem; height: var(--plug-h); padding: 0 1rem;
+      border: 1.5px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 8px 18px -14px rgba(22, 32, 47, 0.4);
+    }
+    .plug-icon { width: 2.6rem; height: 2.6rem; border-radius: 12px; background: var(--teams-soft); color: var(--teams); display: grid; place-items: center; flex: none; }
+    .plug strong, .socket strong { display: block; font-family: var(--head); font-weight: 600; line-height: 1.15; }
+    .plug strong { font-size: 1.02rem; }
+    .plug small, .socket small { display: block; color: var(--muted); }
+    .plug small { font-size: 0.85rem; }
+
+    .hub {
+      display: grid; justify-items: center; gap: 0.7rem; padding: 1.9rem 1.2rem; text-align: center;
+      border-radius: 26px; background: var(--azure); color: #fff; box-shadow: 0 20px 40px -20px rgba(22, 32, 47, 0.55);
+    }
+    .hub .i { width: 3.4rem; height: 3.4rem; }
+    .hub strong { font-family: var(--head); font-weight: 600; font-size: 1.32rem; line-height: 1.12; text-wrap: balance; }
+    .hub span { color: var(--azure-soft); font-size: 0.95rem; line-height: 1.4; }
+
+    .gate {
+      display: grid; justify-items: center; gap: 0.6rem; padding: 1.6rem 0.9rem; text-align: center;
+      border-radius: 22px; background: var(--amber-soft); border: 2px solid var(--amber);
+    }
+    .gate .i { width: 2.6rem; height: 2.6rem; color: var(--amber); }
+    .gate strong { font-family: var(--head); font-weight: 600; font-size: 1.04rem; line-height: 1.2; text-wrap: balance; }
+
+    .sockets { list-style: none; display: grid; gap: 0.5rem; }
+    .socket {
+      position: relative; display: flex; align-items: center; gap: 0.65rem; height: var(--sock-h); padding: 0 0.6rem 0 0.75rem;
+      border-radius: 14px; border: 1.6px dashed var(--muted); background: rgba(255, 255, 255, 0.65); color: var(--muted);
+    }
+    .socket.is-live { border: 2px solid var(--azure); background: #fff; color: var(--ink); }
+    .socket strong { font-size: 1rem; }
+    .socket small { font-size: 0.8rem; }
+    .tick { width: 1.55rem; height: 1.55rem; border-radius: 7px; display: grid; place-items: center; flex: none; border: 1.6px dashed var(--muted); }
+    .socket.is-live .tick { border: 0; background: var(--azure); color: #fff; }
+    .tick .i { width: 1rem; height: 1rem; }
+    .as-user {
+      margin-left: auto; padding: 0.12rem 0.55rem; border-radius: 999px; white-space: nowrap;
+      background: var(--amber-soft); border: 1.5px solid var(--amber-line); color: var(--amber-ink); font-size: 0.8rem; font-weight: 600;
+    }
+
+    /* Wires (desktop) */
+    .plug::after, .plugs::after, .hub::before, .gate::before, .gate::after, .sockets::before, .sockets::after, .socket::before {
+      content: ""; position: absolute; pointer-events: none;
+    }
+    .plug::after { left: 100%; top: 50%; width: calc(var(--stub) + 2px); height: 2px; margin-top: -1px; background: var(--azure); }
+    .plugs::after { right: calc(-1 * var(--stub) - 1px); top: calc(var(--plug-h) / 2 - 1px); bottom: calc(var(--plug-h) / 2 - 1px); width: 2px; background: var(--azure); }
+    .hub::before { right: 100%; top: 50%; width: calc(var(--gap) - var(--stub)); height: 2px; margin-top: -1px; background: var(--azure); }
+    .gate::before { right: 100%; top: 50%; width: var(--gap); height: 2px; margin-top: -1px; background: var(--azure); }
+    .gate::after { left: 100%; top: 50%; width: calc(var(--gap) - var(--stub)); height: 2px; margin-top: -1px; background: var(--azure); }
+    .sockets::before {
+      left: calc(-1 * var(--stub) - 1px); top: calc(var(--sock-h) / 2); bottom: calc(var(--sock-h) / 2); width: 2px;
+      background: repeating-linear-gradient(180deg, var(--muted) 0 5px, transparent 5px 10px);
+    }
+    .sockets::after { left: calc(-1 * var(--stub) - 1px); top: calc(var(--sock-h) / 2 - 1px); height: calc(50% - var(--sock-h) / 2 + 2px); width: 2px; background: var(--azure); }
+    .socket::before { right: 100%; top: 50%; width: var(--stub); height: 2px; margin-top: -1px; background: repeating-linear-gradient(90deg, var(--muted) 0 5px, transparent 5px 10px); }
+    .socket.is-live::before { background: var(--azure); }
+
+    .not-incl {
+      margin-left: auto; padding: 0.08rem 0.45rem; border-radius: 999px; white-space: nowrap;
+      border: 1.5px dashed var(--muted); color: var(--muted); font-size: 0.72rem; font-weight: 600;
+    }
+    /* Amber identity tokens resting on the wires: the user's identity travels every hop. */
+    .board .token, .crop .token {
+      position: absolute; top: 50%; z-index: 1; width: 1.4rem; height: 1.4rem; margin-top: -0.7rem;
+      border-radius: 6px; background: var(--amber); color: #fff; display: grid; place-items: center; outline: 3px solid var(--paper);
+    }
+    .board .token .i, .crop .token .i { width: 0.85rem; height: 0.85rem; color: #fff; }
+    .board .hub .token-hosts, .crop .hub .token-hosts { right: calc(100% + (var(--gap) - var(--stub)) / 2 - 0.7rem); }
+    .board .gate .token-in { right: calc(100% + var(--gap) / 2 - 0.7rem); }
+    .board .gate .token-out { left: calc(100% + (var(--gap) - var(--stub)) / 2 - 0.7rem); }
+
+    .identity-band {
+      display: flex; align-items: center; gap: 0.9rem; margin-top: 1.6rem; padding: 0.85rem 1rem;
+      border-radius: 14px; background: var(--amber-soft); border: 1.5px solid var(--amber-line);
+    }
+    .badge { width: 2.2rem; height: 2.2rem; border-radius: 10px; background: var(--amber); color: #fff; display: grid; place-items: center; flex: none; }
+    .badge .i { width: 1.3rem; height: 1.3rem; }
+    .scope-note { margin-top: 1rem; font-size: 0.9375rem; color: var(--muted); }
+
+    /* The one authored moment: an amber identity pulse travels the wires once. */
+    @media (min-width: 1180px) and (prefers-reduced-motion: no-preference) {
+      .board .plug::after, .board .hub::before, .board .gate::before, .board .gate::after, .board .socket.is-live::before {
+        background-image: linear-gradient(90deg, transparent 0 40%, var(--amber) 40% 60%, transparent 60%), linear-gradient(var(--azure), var(--azure));
+        background-size: 300% 100%, 100% 100%; background-repeat: no-repeat; background-position: 100% 0, 0 0;
+        animation: sweep-x 0.42s cubic-bezier(0.45, 0, 0.2, 1) both;
+      }
+      .board .plugs::after, .board .sockets::after {
+        background-image: linear-gradient(180deg, transparent 0 40%, var(--amber) 40% 60%, transparent 60%), linear-gradient(var(--azure), var(--azure));
+        background-size: 100% 300%, 100% 100%; background-repeat: no-repeat; background-position: 0 100%, 0 0;
+        animation: sweep-y 0.42s cubic-bezier(0.45, 0, 0.2, 1) both;
+      }
+      .board .plug::after { animation-delay: 0.7s; }
+      .board .plugs::after { animation-delay: 1s; }
+      .board .hub::before { animation-delay: 1.25s; }
+      .board .hub { animation: ring 0.9s var(--ease) 1.55s both; }
+      .board .gate::before { animation-delay: 1.8s; }
+      .board .gate { animation: ring-amber 0.9s var(--ease) 2.1s both; }
+      .board .gate::after { animation-delay: 2.35s; }
+      .board .sockets::after { animation-name: sweep-up; animation-delay: 2.6s; }
+      .board .socket.is-live::before { animation-delay: 2.85s; }
+      .board .socket.is-live .as-user, .board .token { animation: pop 0.6s var(--ease) 3.1s both; }
+    }
+    @keyframes sweep-x { from { background-position: 100% 0, 0 0; } to { background-position: 0 0, 0 0; } }
+    @keyframes sweep-y { from { background-position: 0 100%, 0 0; } to { background-position: 0 0, 0 0; } }
+    @keyframes sweep-up { from { background-position: 0 0, 0 0; } to { background-position: 0 100%, 0 0; } }
+    @keyframes ring {
+      from { box-shadow: 0 20px 40px -20px rgba(22, 32, 47, 0.55), 0 0 0 0 rgba(194, 98, 10, 0.55); }
+      to { box-shadow: 0 20px 40px -20px rgba(22, 32, 47, 0.55), 0 0 0 14px rgba(194, 98, 10, 0); }
+    }
+    @keyframes ring-amber {
+      from { box-shadow: 0 0 0 0 rgba(194, 98, 10, 0.5); }
+      to { box-shadow: 0 0 0 14px rgba(194, 98, 10, 0); }
+    }
+    @keyframes pop { 0% { transform: scale(1); } 45% { transform: scale(1.14); } 100% { transform: scale(1); } }
+
+    /* Story video */
+    .video-frame { overflow: hidden; scroll-margin-top: 1.5rem; border-radius: 22px; border: 1px solid var(--line); background: #0d1520; box-shadow: 0 34px 70px -38px rgba(22, 32, 47, 0.5); }
+    .video-frame video { width: 100%; aspect-ratio: 16 / 9; }
+    .story-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem 2rem; margin-top: 1rem; }
+    .transcript { margin-top: 1.5rem; border-top: 1px solid var(--line); }
+    .transcript summary {
+      display: inline-flex; align-items: center; gap: 0.5rem; min-height: 48px; cursor: pointer; font-weight: 600; color: var(--azure); list-style: none;
+    }
+    .transcript summary::-webkit-details-marker { display: none; }
+    .transcript summary::after { content: ""; width: 0.55rem; height: 0.55rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg) translateY(-2px); transition: transform 0.25s var(--ease); }
+    .transcript[open] summary::after { transform: rotate(-135deg) translateY(-2px); }
+    .scenes { list-style: none; display: grid; gap: 1.1rem; padding: 0.5rem 0 1rem; max-width: 72ch; }
+    .scenes li { display: grid; gap: 0.25rem; }
+    .scene-name { font-family: var(--head); font-weight: 600; }
+    .scene-visual { font-size: 0.9375rem; color: var(--muted); }
+    .scene-captions { font-style: italic; }
+
+    /* Engagement layer */
+    /* Engagement layer: a crop of the plug board (hosts wired into one agent) */
+    .crop { --gap: 3.25rem; --stub: 1.25rem; --plug-h: 6rem; display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 0.85fr); column-gap: var(--gap); align-items: center; }
+    .crop .plug { padding: 0 1.25rem; gap: 1rem; }
+    .crop .plug strong { font-size: 1.1rem; }
+    .crop .plug small { font-size: 0.95rem; line-height: 1.45; margin-top: 0.15rem; }
+    .crop .hub { padding: 1.6rem 1.2rem; }
+    .crop .hub .i { width: 2.8rem; height: 2.8rem; }
+    .crop .hub .token .i { width: 0.85rem; height: 0.85rem; }
+
+    /* What people ask */
+    .asks { list-style: none; border-top: 1px solid var(--line); }
+    .asks li { display: grid; grid-template-columns: 12rem minmax(0, 1fr) auto; gap: 0.5rem 2rem; align-items: baseline; padding: 1.35rem 0; border-bottom: 1px solid var(--line); }
+    .ask-when { font-weight: 600; color: var(--muted); font-size: 0.9375rem; }
+    .ask-q { font-family: var(--head); font-weight: 600; font-size: clamp(1.1rem, 1.5vw, 1.3rem); line-height: 1.3; }
+    .ask-sys { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: flex-end; }
+    .sys { padding: 0.15rem 0.6rem; border-radius: 999px; border: 1.5px solid var(--azure-line); background: var(--azure-soft); color: var(--azure-deep); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; }
+    .sys.sys-write { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber-ink); }
+
+    /* Identity journey */
+    .journey { list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1.5rem; position: relative; }
+    .journey::before { content: ""; position: absolute; left: 1.4rem; right: 1.4rem; top: 1.4rem; height: 3px; margin-top: -1.5px; background: var(--amber); }
+    .journey li { position: relative; display: grid; align-content: start; gap: 0.6rem; }
+    .step {
+      width: 2.8rem; height: 2.8rem; border-radius: 0.85rem; display: grid; place-items: center; margin-bottom: 0.6rem;
+      background: var(--amber); color: #fff; font-family: var(--head); font-weight: 800; font-size: 1.35rem; box-shadow: 0 8px 16px -10px rgba(22, 32, 47, 0.45);
+    }
+    .journey p { color: var(--muted); font-size: 0.98rem; }
+    .record { display: grid; gap: 0.2rem; padding: 0.9rem 1rem; border-radius: 14px; border: 1px solid var(--line); background: #fff; box-shadow: 0 14px 28px -20px rgba(22, 32, 47, 0.45); }
+    .record dl { display: grid; gap: 0.2rem; }
+    .record dt { font-size: 0.8125rem; color: var(--muted); }
+    .record dd { font-family: var(--head); font-weight: 600; }
+    .record dd + dt { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
+    .record .who { justify-self: start; padding: 0.1rem 0.6rem; border-radius: 999px; background: var(--amber-soft); border: 1.5px solid var(--amber-line); color: var(--amber-ink); font-family: var(--body); }
+    .keynote {
+      display: flex; gap: 1rem; align-items: flex-start; margin-top: clamp(2rem, 4vw, 3rem); padding: 1.1rem 1.25rem;
+      border-radius: 16px; background: var(--azure-soft); border: 1.5px solid var(--azure-line);
+    }
+    .keynote .i { width: 1.6rem; height: 1.6rem; color: var(--azure); margin-top: 0.15rem; }
+    .keynote p + p { margin-top: 0.4rem; }
+
+    /* Plug in your next system */
+    .table-scroll { overflow-x: auto; display: grid; grid-template-columns: 7rem minmax(46rem, 1fr); column-gap: 2rem; }
+    .plug-table { width: calc(100% + 1rem); margin-inline: -0.5rem; border-collapse: separate; border-spacing: 0.5rem; }
+    .plug-table th, .plug-table td { text-align: left; padding: 0.8rem 1rem; }
+    .plug-table thead th { height: 3rem; padding-block: 0 0.25rem; font-family: var(--head); font-weight: 600; font-size: 1rem; vertical-align: bottom; white-space: nowrap; }
+    .plug-table thead small { display: block; font-family: var(--body); font-weight: 400; font-size: 0.85rem; color: var(--muted); }
+    .plug-table tbody th { font-family: var(--head); font-weight: 600; font-size: 1.05rem; white-space: nowrap; }
+    .plug-table tbody th small { display: block; font-family: var(--body); font-weight: 400; font-size: 0.8125rem; color: var(--muted); }
+    .plug-table tbody th, .plug-table tbody td { border: 1.6px dashed var(--muted); border-radius: 12px; color: var(--muted); }
+    .plug-table tbody tr.is-live > * { border: 2px solid var(--azure-line); background: var(--azure-soft); color: var(--ink); }
+    .plug-table tbody tr.is-live > th { border-color: var(--azure); background: #fff; }
+    /* The gateway policy is the identity step, so it takes the identity colour. */
+    .plug-table tbody tr.is-live > td:nth-child(3) { border-color: var(--amber-line); background: var(--amber-soft); }
+    .plug-table tbody tr.is-live > td:nth-child(3) .i { color: var(--amber-ink); }
+    /* Decorative "One agent" rail beside the table; each row header wires into it. */
+    .agent-rail {
+      align-self: stretch; margin: 4.7rem 0 0.5rem; display: grid; align-content: center; justify-items: center; gap: 0.6rem;
+      padding: 1rem 0.75rem; text-align: center; border-radius: 22px; background: var(--azure); color: #fff;
+      box-shadow: 0 20px 40px -20px rgba(22, 32, 47, 0.55);
+    }
+    .agent-rail .i { width: 2.6rem; height: 2.6rem; }
+    .agent-rail strong { font-family: var(--head); font-weight: 600; font-size: 1.15rem; line-height: 1.1; }
+    .plug-table code { white-space: nowrap; }
+    .plug-table tbody th { position: relative; }
+    .plug-table tbody th::before {
+      content: ""; position: absolute; right: 100%; top: 50%; width: calc(2rem + 2px); height: 2px; margin-top: -1px;
+      background: repeating-linear-gradient(90deg, var(--muted) 0 5px, transparent 5px 10px);
+    }
+    .plug-table tbody tr.is-live > th::before { background: var(--azure); }
+    .plug-table td .i { display: inline-block; vertical-align: -0.2em; width: 1.05rem; height: 1.05rem; margin-right: 0.35rem; color: var(--azure); }
+    .why-meta { margin-top: clamp(2rem, 4vw, 3rem); display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 1rem 3rem; align-items: start; }
+    .why-meta p { color: var(--muted); }
+
+    /* In the box */
+    .box { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 2.5rem 4rem; }
+    .box h3 { margin-bottom: 1rem; }
+    .box ul { list-style: none; border-top: 1px solid var(--line); }
+    .box li { padding: 0.85rem 0; border-bottom: 1px solid var(--line); }
+    .box li strong { font-weight: 600; }
+    .boundary { margin-top: 1.5rem; padding: 1.1rem 1.25rem; border-radius: 16px; background: var(--node); border: 1px solid var(--line); color: var(--muted); }
+    .boundary strong { color: var(--ink); }
+
+    /* For architects and developers */
+    .builders { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 2.5rem 3.5rem; align-items: start; }
+    .arch { border-radius: 18px; overflow: hidden; border: 1px solid var(--line); background: #fff; }
+    .arch figcaption { padding: 0.85rem 1rem; border-top: 1px solid var(--line); font-size: 0.9rem; color: var(--muted); }
+    .deploy { display: grid; gap: 1.25rem; }
+    pre { margin: 0; padding: 1.1rem 1.25rem; overflow-x: auto; border-radius: 14px; background: #0f1a2a; color: #e8eef7; font: 400 0.875rem/1.65 var(--mono); }
+    pre .c { color: #a7b4c8; }
+    .links { list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.5rem; border-top: 1px solid var(--line); }
+    .links a { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 48px; padding: 0.6rem 0; border-bottom: 1px solid var(--line); font-weight: 600; text-decoration: none; }
+    .links a:hover { text-decoration: underline; }
+    .links .i { width: 1rem; height: 1rem; }
+
+    /* Footer */
+    .footer { margin-top: clamp(5rem, 10vw, 8rem); padding: 2.5rem 0 3rem; border-top: 1px solid var(--line); background: var(--node); }
+    .footer-inner { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1.5rem 3rem; }
+    .footer p { color: var(--muted); font-size: 0.9375rem; max-width: 60ch; }
+    .footer-links { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; }
+    .footer-links a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+
+    /* Responsive: the four-column plug board needs ~1180px; below that it stacks. */
+    @media (max-width: 1179px) {
+      .board-grid { grid-template-columns: 1fr; row-gap: 0; }
+      .zone { display: block; }
+      .zone > * { grid-column: auto; }
+      .zone-head { margin-bottom: 0.75rem; }
+      .zone + .zone { margin-top: 2.5rem; }
+      /* Vertical connectors carry an amber identity dot when stacked. */
+      .zone + .zone::before {
+        content: ""; display: block; width: 14px; height: 1.6rem; margin: -2.05rem auto 0.45rem;
+        background: radial-gradient(circle, var(--amber) 0 5px, transparent 5.5px) center / 14px 14px no-repeat, linear-gradient(var(--azure), var(--azure)) center / 2px 100% no-repeat;
+      }
+      .board .token { display: none; }
+      .board .plug::after, .board .plugs::after, .board .hub::before, .board .gate::before, .board .gate::after,
+      .board .sockets::before, .board .sockets::after, .board .socket::before { display: none; }
+      .board .plugs { grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+      .board .sockets { grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+      .board .hub, .board .gate { justify-items: start; text-align: left; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 1rem; padding: 1.1rem 1.2rem; }
+      .board .hub .i { width: 2.6rem; height: 2.6rem; grid-row: span 2; }
+      .board .gate .i { width: 2.2rem; height: 2.2rem; }
+    }
+    @media (max-width: 999px) {
+      .hero-head, .hero-side, .section-head-split, .why-meta, .box, .builders { grid-template-columns: 1fr; }
+      .crop .token, .crop .plug::after, .crop .plugs::after { display: none; }
+      .crop { grid-template-columns: 1fr; }
+      .crop .hub { margin-top: 2.5rem; justify-items: start; text-align: left; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 1rem; padding: 1.1rem 1.2rem; }
+      .crop .hub .i { width: 2.6rem; height: 2.6rem; grid-row: span 2; }
+      .crop .hub::before {
+        display: block; left: 50%; right: auto; top: -2.05rem; width: 14px; height: 1.6rem; margin: 0 0 0 -7px;
+        background: radial-gradient(circle, var(--amber) 0 5px, transparent 5.5px) center / 14px 14px no-repeat, linear-gradient(var(--azure), var(--azure)) center / 2px 100% no-repeat;
+      }
+      .crop .plug { height: auto; min-height: var(--plug-h); padding-block: 0.9rem; align-items: flex-start; }
+      .asks li { grid-template-columns: 1fr; }
+      .ask-sys { justify-content: flex-start; }
+      .journey { grid-template-columns: 1fr; gap: 1.6rem; padding-left: 4rem; }
+      .journey::before { left: 1.4rem; right: auto; top: 1.4rem; bottom: 1.4rem; width: 3px; height: auto; margin: 0 0 0 -1.5px; }
+      .journey .step { position: absolute; left: -4rem; top: 0; margin: 0; }
+      .links { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 699px) {
+      .agent-rail, .plug-table tbody th::before { display: none; }
+      .table-scroll { grid-template-columns: minmax(46rem, 1fr); }
+    }
+    @media (max-width: 560px) {
+      .topbar .brand { display: none; }
+      .topbar .gh span { display: none; }
+      .identity-band { align-items: flex-start; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c.6 4.6 2.4 6.4 7 7-4.6.6-6.4 2.4-7 7-.6-4.6-2.4-6.4-7-7 4.6-.6 6.4-2.4 7-7z"/><path d="M19 15.5c.3 1.8 1 2.5 2.5 2.8-1.5.3-2.2 1-2.5 2.7-.3-1.7-1-2.4-2.5-2.7 1.5-.3 2.2-1 2.5-2.8z"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></symbol>
+      <symbol id="i-gateway" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 14h3M14 14h2"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9.5 18 20 6.5"/></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></symbol>
+      <symbol id="i-keyoff" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l2 2M3 3l18 18"/></symbol>
+      <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M14 6l6 6-6 6"/></symbol>
+      <symbol id="i-arrow-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H5M10 6l-6 6 6 6"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></symbol>
+      <symbol id="i-github" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
+    </defs>
+  </svg>
+
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a href="https://ozgurkarahan.com/"><svg class="i" aria-hidden="true"><use href="#i-arrow-left"/></svg>ozgurkarahan.com</a>
+      <p class="brand"><span class="brand-mark" aria-hidden="true"><svg class="i"><use href="#i-spark"/></svg></span>Customer 360 Assistant</p>
+      <a class="gh" href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation" aria-label="Source on GitHub"><svg class="i" aria-hidden="true"><use href="#i-github"/></svg><span aria-hidden="true">Source on GitHub</span></a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap">
+        <div class="hero-head">
+          <h1 id="hero-title">Build the engagement layer once. <span>Let one agent act across all your systems of record.</span></h1>
+          <div class="hero-side">
+            <p class="lede">With Customer 360 Assistant, people ask in Microsoft Teams. One Microsoft Foundry agent routes each request to the right tool, and <strong>every action runs as the signed-in user</strong>, with their own permissions in each system.</p>
+            <div class="actions">
+              <a class="btn btn-primary" href="#watch" data-play><svg class="i" aria-hidden="true"><use href="#i-play"/></svg>Watch the 2:40 story</a>
+              <a class="btn btn-quiet" href="#build">Deploy the sample</a>
+            </div>
+          </div>
+        </div>
+
+        <figure class="board" aria-label="The plug board: hosts, one agent, an identity gateway and systems of record">
+          <div class="board-grid">
+            <div class="zone zone-hosts">
+              <div class="zone-head">
+                <p class="zone-title">Engagement layer</p>
+                <p class="zone-sub">Built once, where people work</p>
+              </div>
+              <ul class="plugs">
+                <li class="plug"><span class="plug-icon" aria-hidden="true"><svg class="i"><use href="#i-chat"/></svg></span><span><strong>Teams chats</strong><small>1:1 and group chats</small></span></li>
+                <li class="plug"><span class="plug-icon" aria-hidden="true"><svg class="i"><use href="#i-spark"/></svg></span><span><strong>Microsoft 365 Copilot</strong><small>via Foundry publishing</small></span></li>
+                <li class="plug"><span class="plug-icon" aria-hidden="true"><svg class="i"><use href="#i-globe"/></svg></span><span><strong>Web chat</strong><small>sample app included</small></span></li>
+              </ul>
+            </div>
+            <div class="zone zone-agent">
+              <div class="zone-head">
+                <p class="zone-title">One agent</p>
+                <p class="zone-sub">Routes every request</p>
+              </div>
+              <div class="hub">
+                <span class="token token-hosts" aria-hidden="true"><svg class="i"><use href="#i-user"/></svg></span>
+                <svg class="i" aria-hidden="true"><use href="#i-spark"/></svg>
+                <strong>Microsoft Foundry agent</strong>
+                <span>Understands the request and picks the right tools</span>
+              </div>
+            </div>
+            <div class="zone zone-gateway">
+              <div class="zone-head">
+                <p class="zone-title">Identity gateway</p>
+                <p class="zone-sub">Azure API Management</p>
+              </div>
+              <div class="gate">
+                <span class="token token-in" aria-hidden="true"><svg class="i"><use href="#i-user"/></svg></span>
+                <svg class="i" aria-hidden="true"><use href="#i-gateway"/></svg>
+                <strong>Swaps in the user's own token</strong>
+                <span class="token token-out" aria-hidden="true"><svg class="i"><use href="#i-user"/></svg></span>
+              </div>
+            </div>
+            <div class="zone zone-systems">
+              <div class="zone-head">
+                <p class="zone-title">Systems of record</p>
+                <p class="zone-sub">Solid: included. Dashed: add yours.</p>
+              </div>
+              <ul class="sockets">
+                <li class="socket is-live"><span class="tick" aria-hidden="true"><svg class="i"><use href="#i-check"/></svg></span><span><strong>Salesforce</strong><small>CRM</small></span><span class="as-user">as Alice</span><span class="sr-only">(included)</span></li>
+                <li class="socket is-live"><span class="tick" aria-hidden="true"><svg class="i"><use href="#i-check"/></svg></span><span><strong>ServiceNow</strong><small>ITSM</small></span><span class="as-user">as Alice</span><span class="sr-only">(included)</span></li>
+                <li class="socket"><span class="tick" aria-hidden="true"></span><span><strong>Jira</strong><small>Work tracking</small></span><span class="not-incl">Not included</span></li>
+                <li class="socket"><span class="tick" aria-hidden="true"></span><span><strong>SAP</strong><small>ERP</small></span><span class="not-incl">Not included</span></li>
+                <li class="socket"><span class="tick" aria-hidden="true"></span><span><strong>Workday</strong><small>HR</small></span><span class="not-incl">Not included</span></li>
+                <li class="socket"><span class="tick" aria-hidden="true"></span><span><strong>Your API</strong><small>Custom</small></span><span class="not-incl">Not included</span></li>
+              </ul>
+            </div>
+          </div>
+          <figcaption class="identity-band">
+            <span class="badge" aria-hidden="true"><svg class="i"><use href="#i-user"/></svg></span>
+            <span><strong>Alice signs in once.</strong> Every wire carries her identity, so each system applies Alice's own permissions.</span>
+          </figcaption>
+        </figure>
+        <p class="scope-note">Customer 360 Assistant is an open-source reference implementation. Salesforce and ServiceNow are working examples; Jira, SAP, Workday and your own APIs are not included and follow the same pattern.</p>
+      </div>
+    </section>
+
+    <section class="section" id="story" aria-labelledby="story-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 id="story-title">Five minutes before the call.</h2>
+          <p class="intro">Alice, an account manager, has five minutes before a call with Contoso. In a Teams group chat she gets a 360° view across Salesforce and ServiceNow. After the call, she updates the CRM in one sentence. Every action runs as Alice.</p>
+        </div>
+        <div class="video-frame" id="watch">
+          <video controls preload="metadata" playsinline width="1920" height="1080" poster="media/customer360-story-v1-poster.jpg" aria-describedby="story-note">
+            <source src="media/customer360-story-v1.mp4" type="video/mp4">
+            <p>Your browser cannot play this video. <a href="media/customer360-story-v1.mp4">Download the MP4</a>.</p>
+          </video>
+        </div>
+        <div class="story-meta">
+          <p class="fine" id="story-note">2 min 40 s, silent, with burned-in English captions. Animated mock-ups with demo data (Contoso, Alice, Bob).</p>
+          <p class="fine">Consent is designed to happen once per system; a current Foundry platform issue can ask users to consent again after about an hour (<a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/CHANGELOG.md#known-issues-platform-not-fixable-in-this-repo">known issue</a>).</p>
+        </div>
+        <details class="transcript">
+          <summary>Read the transcript and scene descriptions</summary>
+          <ol class="scenes">
+            <li><p class="scene-name">A real Monday morning</p><p class="scene-visual">A countdown: your customer call starts in five minutes.</p><p class="scene-captions">Meet Alice, an account manager. Her biggest customer, Contoso, joins a call in 5 minutes.</p></li>
+            <li><p class="scene-name">Two teams, two systems, one customer</p><p class="scene-visual">CRM in Salesforce and ITSM in ServiceNow side by side. Nobody sees the risk.</p><p class="scene-captions">Deals live in Salesforce. Support tickets live in ServiceNow. Connecting the dots by hand takes much longer than five minutes.</p></li>
+            <li><p class="scene-name">One question</p><p class="scene-visual">In a Teams group chat, Alice types "Give me a Customer 360 view for Contoso Ltd". Behind the scenes, acting as Alice, the assistant reaches Salesforce and ServiceNow.</p><p class="scene-captions">So Alice asks her assistant, right in a Teams group chat. It queries Salesforce and ServiceNow using Alice's own access.</p></li>
+            <li><p class="scene-name">The 360° answer</p><p class="scene-visual">Open pipeline: Contoso Analytics Add-on, $350k, in Qualification. Open cases: trading desk dashboard timeout, report generation slow. IT incidents: database performance degradation, network latency in EU-West. Both cases trace back to one database incident; suggested action: share the fix ETA on the call.</p><p class="scene-captions">Seconds later, she has the open deal, worth $350k… the customer's open support cases… and the IT incidents behind them. One root cause behind both cases, and a $350k deal at risk.</p></li>
+            <li><p class="scene-name">After the call</p><p class="scene-visual">The call is done. Time to update the CRM.</p><p class="scene-captions">The call goes well. Now the CRM needs an update.</p></li>
+            <li><p class="scene-name">Update by asking</p><p class="scene-visual">Alice types: "Add a note on the Contoso Analytics Add-on opp: customer wants a POC first. Move the close date to next quarter."</p><p class="scene-captions">One sentence, in the chat she already has open. She asks for a note for the team and a new close date.</p></li>
+            <li><p class="scene-name">Written to Salesforce</p><p class="scene-visual">"Done. Two updates, zero clicks." The opportunity shows the note and a close date moved from Dec 18, 2026 to Mar 31, 2027.</p><p class="scene-captions">The assistant logs the note in Salesforce and moves the close date. And the record shows exactly who made the change.</p></li>
+            <li><p class="scene-name">Look closer</p><p class="scene-visual">Last modified by: Alice. Not a bot. Not a service account.</p><p class="scene-captions">Salesforce recorded the change under Alice's own name.</p></li>
+            <li><p class="scene-name">Follow Alice's identity</p><p class="scene-visual">Alice in Teams, then the agent (Teams bot and Foundry agent, no master key), then the API gateway (Azure API Management: validate Alice's token, find her account in each system, get a token for Alice in each system), then Salesforce and ServiceNow, each "as Alice". Her permissions. Their rules.</p><p class="scene-captions">How does it work? Follow Alice's identity. She is signed in to Teams with her work account. The agent has no master key. It carries Alice's token. The gateway checks it, then gets Alice's own token for each system. Each system enforces its own rules. Alice sees only what she may see.</p></li>
+            <li><p class="scene-name">Consent once</p><p class="scene-visual">An OAuth consent card: "Customer 360 Assistant wants to access Salesforce as you". Alice selects Allow access, and the card reads "Connected as Alice".</p><p class="scene-captions">The first time, Alice approves access once for each system. After that, every request runs as her.</p></li>
+            <li><p class="scene-name">Why it matters</p><p class="scene-visual">Trust built in, not bolted on: her permissions, no master key, fully traceable.</p><p class="scene-captions">There is no over-privileged service account in the data path. Every read and write can be traced to a real person.</p></li>
+            <li><p class="scene-name">Where you already work</p><p class="scene-visual">Inside Microsoft Teams: 1:1 chat, group chats, and as a Copilot agent.</p><p class="scene-captions">It works in 1:1 chats, in group chats, and as a Copilot agent.</p></li>
+            <li><p class="scene-name">Open source</p><p class="scene-visual">Customer 360 Assistant: identity-aware AI across your CRM and ITSM, with links to both GitHub repositories.</p><p class="scene-captions">Customer 360 Assistant: the code is open source on GitHub.</p></li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
+    <section class="section" id="engagement" aria-labelledby="engagement-title">
+      <div class="wrap">
+        <div class="section-head section-head-split">
+          <div class="section-head">
+            <h2 id="engagement-title">Build the engagement layer once.</h2>
+            <p class="intro">People already work in Teams. The assistant meets them there, and in Microsoft 365 Copilot through Foundry publishing, so there is no new portal to adopt. Every system you add later answers in the same conversation.</p>
+          </div>
+          <p class="locator" aria-hidden="true"><span class="on"></span><span></span><span></span><span></span><span class="locator-label">Engagement layer</span></p>
+        </div>
+        <div class="crop">
+          <ul class="plugs">
+            <li class="plug">
+              <span class="plug-icon" aria-hidden="true"><svg class="i"><use href="#i-chat"/></svg></span>
+              <span><strong>Teams 1:1 and group chats</strong><small>Ask privately, or mention the assistant where the team already talks. <code>azd up</code> publishes a Teams app to your org catalog.</small></span>
+            </li>
+            <li class="plug">
+              <span class="plug-icon" aria-hidden="true"><svg class="i"><use href="#i-spark"/></svg></span>
+              <span><strong>Microsoft 365 Copilot</strong><small>Publish the same agent from the Foundry portal. The <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/teams-integration.md">Teams and Copilot guide</a> covers both paths.</small></span>
+            </li>
+            <li class="plug">
+              <span class="plug-icon" aria-hidden="true"><svg class="i"><use href="#i-globe"/></svg></span>
+              <span><strong>Web chat</strong><small>A sample web app (MSAL.js) signs people in and talks to any Foundry agent it discovers in your subscription.</small></span>
+            </li>
+          </ul>
+          <div class="hub">
+            <span class="token token-hosts" aria-hidden="true"><svg class="i"><use href="#i-user"/></svg></span>
+            <svg class="i" aria-hidden="true"><use href="#i-spark"/></svg>
+            <strong>One Foundry agent</strong>
+            <span>The same agent and the same identity, whichever host people use</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="agent" aria-labelledby="agent-title">
+      <div class="wrap">
+        <div class="section-head section-head-split">
+          <div class="section-head">
+            <h2 id="agent-title">One agent routes every request.</h2>
+            <p class="intro">A Microsoft Foundry agent understands what the person needs, chooses the tools, correlates answers across systems and drafts the update. The same agent serves every host, and every read and write uses the asker's own access.</p>
+          </div>
+          <p class="locator" aria-hidden="true"><span></span><span class="on"></span><span></span><span></span><span class="locator-label">One agent</span></p>
+        </div>
+        <ol class="asks" aria-label="What people ask">
+          <li><p class="ask-when">Before a customer call</p><p class="ask-q">“Prepare me for my QBR with Acme Corp. Pull everything from both systems.”</p><p class="ask-sys"><span class="sys">Salesforce</span><span class="sys">ServiceNow</span></p></li>
+          <li><p class="ask-when">Account review</p><p class="ask-q">“Give me a Customer 360 view for Contoso Ltd.”</p><p class="ask-sys"><span class="sys">Salesforce</span><span class="sys">ServiceNow</span></p></li>
+          <li><p class="ask-when">Incident triage</p><p class="ask-q">“We have a P1 incident about API gateway failures. Which accounts and open opportunities are affected?”</p><p class="ask-sys"><span class="sys">ServiceNow</span><span class="sys">Salesforce</span></p></li>
+          <li><p class="ask-when">Change planning</p><p class="ask-q">“We're planning a billing upgrade on Saturday. Check the change request and the accounts with upcoming renewals.”</p><p class="ask-sys"><span class="sys">ServiceNow</span><span class="sys">Salesforce</span></p></li>
+          <li><p class="ask-when">After the call</p><p class="ask-q">“Add a note on the Contoso Analytics Add-on opportunity: the customer wants a POC first. Move the close date to next quarter.”</p><p class="ask-sys"><span class="sys sys-write">Salesforce write, as the user</span></p></li>
+        </ol>
+        <p class="fine" style="margin-top:1rem">Adapted from the repository's <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/TEST_PROMPTS_360.md">test scenarios</a>, which run against seeded demo data. The last prompt is the CRM update shown in the video.</p>
+      </div>
+    </section>
+
+    <section class="section" id="identity" aria-labelledby="identity-title">
+      <div class="wrap">
+        <div class="section-head section-head-split">
+          <div class="section-head">
+            <h2 id="identity-title">Acts as the user, never as a super-user.</h2>
+            <p class="intro">The agent holds no shared credential for your systems. It carries the signed-in user's identity, and each system decides what that person may see and change.</p>
+          </div>
+          <p class="locator" aria-hidden="true"><span></span><span></span><span class="on-id"></span><span></span><span class="locator-label">Identity gateway</span></p>
+        </div>
+        <ol class="journey">
+          <li><span class="step" aria-hidden="true">1</span><h3>Sign in once</h3><p>Alice signs in to Teams with her work account (Microsoft Entra ID).</p></li>
+          <li><span class="step" aria-hidden="true">2</span><h3>Consent once per system, by design</h3><p>Standard OAuth consent the first time the agent reaches a system; a <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/CHANGELOG.md#known-issues-platform-not-fixable-in-this-repo">known platform issue</a> can ask again after about an hour.</p></li>
+          <li><span class="step" aria-hidden="true">3</span><h3>The gateway swaps the token</h3><p>Azure API Management validates Alice's token, finds her account in each system and gets a token issued to Alice.</p></li>
+          <li><span class="step" aria-hidden="true">4</span><h3>Each system applies its rules</h3><p>Sharing rules, field-level security and ACLs decide what Alice can see and change.</p></li>
+          <li>
+            <span class="step" aria-hidden="true">5</span><h3>Writes carry her name</h3>
+            <div class="record">
+              <dl aria-label="Example Salesforce record">
+                <dt>Opportunity · example data</dt><dd>Contoso Analytics Add-on</dd>
+                <dt>Last modified by</dt><dd class="who">Alice</dd>
+              </dl>
+            </div>
+          </li>
+        </ol>
+        <div class="keynote">
+          <svg class="i" aria-hidden="true"><use href="#i-keyoff"/></svg>
+          <div>
+            <p><strong>No shared credential touches business data.</strong> A minimal-access service account only maps Alice to her Salesforce user, and each per-user token exchange appears in Salesforce Login History.</p>
+            <p class="fine">Identity propagation stops privilege escalation, but it cannot stop an agent from misreading intent, so keep confirmations for destructive actions (<a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/deepdive.md#what-it-does-not-protect-against">what it does not protect against</a>).</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="extend" aria-labelledby="extend-title">
+      <div class="wrap">
+        <div class="section-head section-head-split">
+          <div class="section-head">
+            <h2 id="extend-title">Your next system plugs into the same agent.</h2>
+            <p class="intro">Salesforce and ServiceNow are working examples. Jira, SAP, Workday and your own APIs are not included; each would follow the same three-part pattern, while the agent, the Teams experience and the identity flow stay the same.</p>
+          </div>
+          <p class="locator" aria-hidden="true"><span></span><span></span><span></span><span class="on"></span><span class="locator-label">Systems of record</span></p>
+        </div>
+        <div class="table-scroll" role="region" aria-label="What each system needs (scrollable table)" tabindex="0">
+          <div class="agent-rail" aria-hidden="true">
+            <svg class="i"><use href="#i-spark"/></svg>
+            <strong>One agent</strong>
+          </div>
+          <table class="plug-table">
+            <caption class="sr-only">What each system of record needs. Salesforce and ServiceNow are included; the others follow the same pattern and are not included.</caption>
+            <thead>
+              <tr>
+                <th scope="col">System of record<small>keeps its own rules</small></th>
+                <th scope="col">Tool server<small>discover, query, act</small></th>
+                <th scope="col">Gateway policy<small>user-token exchange</small></th>
+                <th scope="col">Foundry connection<small>attaches the tools</small></th>
+                <th scope="col">Status<small>in this sample</small></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="is-live"><th scope="row">Salesforce<small>CRM</small></th><td><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>7 tools</td><td><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>OBO policy</td><td><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>OAuth2 connection</td><td>Included: this repository</td></tr>
+              <tr class="is-live"><th scope="row">ServiceNow<small>ITSM</small></th><td><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>3 tools</td><td><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>OBO policy</td><td><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>OAuth2 connection</td><td>Included: <a href="https://github.com/ozgurkarahan/snow-meta-tool"><code>snow-meta-tool</code></a></td></tr>
+              <tr><th scope="row">Jira<small>Work tracking</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
+              <tr><th scope="row">SAP<small>ERP</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
+              <tr><th scope="row">Workday<small>HR</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
+              <tr><th scope="row">Your API<small>Custom</small></th><td>You add</td><td>You add</td><td>You add</td><td>Not included, same pattern</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="why-meta">
+          <h3>Why meta-tools instead of one tool per object?</h3>
+          <p>Many MCP servers define one tool per object, so every new object means new code and a longer tool list. A meta-tool server works like a shell: the agent discovers objects, learns their fields and builds the query itself, with the user's own access. Seven generic tools reach the standard and custom objects the user can see, and the list stays the same whatever the size of the org. <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/deepdive.md#the-meta-tool-pattern">Read the pattern</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="box" aria-labelledby="box-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 id="box-title">What's in the box.</h2>
+        </div>
+        <div class="box">
+          <div>
+            <h3>In this repository</h3>
+            <ul>
+              <li><strong>Salesforce meta-tool server.</strong> Seven tools: discover objects, describe fields, query, search, write and run approvals, plus <code>whoami</code>.</li>
+              <li><strong>Identity gateway.</strong> Azure API Management policies for the three-phase on-behalf-of (OBO) exchange.</li>
+              <li><strong>Foundry agents.</strong> <code>salesforce-assistant</code> and <code>customer360-assistant</code>, wired through OAuth2 identity-passthrough connections.</li>
+              <li><strong>Engagement.</strong> A web chat app, a Teams app for your org catalog, and Microsoft 365 Copilot through Foundry publishing.</li>
+              <li><strong>Delivery.</strong> Bicep and <code>azd</code>, Salesforce org setup scripts, demo-data seeding and end-to-end tests.</li>
+            </ul>
+          </div>
+          <div>
+            <h3>The two-repo Customer 360 demo</h3>
+            <ul>
+              <li><strong><a href="https://github.com/ozgurkarahan/snow-meta-tool">snow-meta-tool</a>.</strong> ServiceNow tools with the same pattern and the same identity flow.</li>
+              <li><strong>Correlated demo data.</strong> Accounts, opportunities, cases and incidents that line up across both systems.</li>
+            </ul>
+            <p class="boundary"><strong>A reference implementation, not a product.</strong> It runs on demo data and has not been audited for production. Read the <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/deepdive.md#current-scope-and-limitations">scope and limitations</a> and the <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/CHANGELOG.md#known-issues-platform-not-fixable-in-this-repo">known platform issues</a> before you adapt it.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="build" aria-labelledby="build-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 id="build-title">For architects and developers.</h2>
+          <p class="intro">Infrastructure as code, the gateway policies, the tool server and the agents are all in the repository. With the prerequisites in place, one command deploys the stack.</p>
+        </div>
+        <div class="builders">
+          <figure class="arch">
+            <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/diagrams/azure-architecture.png">
+              <img src="assets/architecture.webp" width="1600" height="1414" loading="lazy" decoding="async" alt="Azure architecture: browser and Teams clients, Container Apps for the chat app and bot channel, the Microsoft Foundry agent and model, API Management with the Salesforce and ServiceNow OBO policies and Key Vault certificates, the two MCP servers, and the external Salesforce and ServiceNow clouds, each enforcing the user's own permissions.">
+            </a>
+            <figcaption>Full architecture. Select the image to open the full-resolution diagram on GitHub.</figcaption>
+          </figure>
+          <div class="deploy">
+            <h3>Deploy the Salesforce side</h3>
+            <p class="fine">Prerequisites: a certificate, the Salesforce org setup, an Entra app for the OAuth2 connection and identity mapping. The <a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/installation.md">installation guide</a> walks through each one.</p>
+<pre tabindex="0" aria-label="Deployment commands"><code><span class="c"># after the prerequisites in docs/installation.md</span>
+azd env new obo
+azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
+azd env set SF_CONNECTED_APP_CLIENT_ID "&lt;consumer-key&gt;"
+azd env set SF_SERVICE_ACCOUNT_USERNAME "&lt;svc-user&gt;"
+azd env set MCP_OAUTH_CLIENT_ID "&lt;mcp-oauth-app-id&gt;"
+azd env set MCP_OAUTH_CLIENT_SECRET "&lt;secret&gt;"
+azd up</code></pre>
+            <ul class="links">
+              <li><a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation">Repository <svg class="i" aria-hidden="true"><use href="#i-arrow-right"/></svg></a></li>
+              <li><a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/installation.md">Installation guide <svg class="i" aria-hidden="true"><use href="#i-arrow-right"/></svg></a></li>
+              <li><a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/deepdive.md">Technical deep dive <svg class="i" aria-hidden="true"><use href="#i-arrow-right"/></svg></a></li>
+              <li><a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/docs/teams-integration.md">Teams and Copilot <svg class="i" aria-hidden="true"><use href="#i-arrow-right"/></svg></a></li>
+              <li><a href="https://github.com/ozgurkarahan/salesforce-meta-tool-identity-propagation/blob/master/CHANGELOG.md">v2 release notes <svg class="i" aria-hidden="true"><use href="#i-arrow-right"/></svg></a></li>
+              <li><a href="https://github.com/ozgurkarahan/snow-meta-tool">ServiceNow companion <svg class="i" aria-hidden="true"><use href="#i-arrow-right"/></svg></a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div>
+        <p class="brand"><span class="brand-mark" aria-hidden="true"><svg class="i"><use href="#i-spark"/></svg></span>Customer 360 Assistant</p>
+        <p style="margin-top:0.6rem">By Ozgur Karahan. Part of the Identity Propagation series: <a href="https://www.linkedin.com/pulse/from-theory-production-salesforce-meta-tools-identity-ozgur-karahan-ch30e/">read the architecture story</a>. MIT License. Fonts: Bricolage Grotesque, Instrument Sans and IBM Plex Mono (<a href="assets/fonts/OFL-bricolage-grotesque.txt">SIL OFL 1.1</a>).</p>
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://ozgurkarahan.com/">ozgurkarahan.com</a></li>
+        <li><a href="https://www.linkedin.com/in/karahanozgur/">LinkedIn</a></li>
+        <li><a href="https://github.com/ozgurkarahan">GitHub</a></li>
+      </ul>
+    </div>
+  </footer>
+  <script>
+    // "Watch the 2:40 story" scrolls to the player (plain link without JS) and starts playback.
+    document.querySelector("[data-play]")?.addEventListener("click", () => {
+      const video = document.querySelector("#watch video");
+      if (!video) return;
+      video.focus({ preventScroll: true });
+      video.play().catch(() => {});
+    });
+  </script>
+</body>
+</html>
