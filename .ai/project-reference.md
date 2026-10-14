@@ -133,6 +133,7 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 - SF JWT uses org-specific instance URL for `iss`/`aud` — NOT `login.salesforce.com`
 - `SF_INSTANCE_URL` must be set via `azd env set` before `azd up` for APIM `validate-jwt` to work
 - `main.bicepparam` must explicitly map azd env vars to Bicep parameters
+- `azd provision` preserves deployed container images: `SERVICE_CHAT_APP_IMAGE_NAME` / `SERVICE_SALESFORCE_MCP_IMAGE_NAME` (written by `azd deploy`) are passed to the container app modules. On a fresh env (vars unset) the first provision still uses the helloworld placeholder until `azd deploy` runs. (Before this, a provision-only run reset both apps to helloworld → ingress timeouts, incident 2026-07-28.)
 
 ---
 

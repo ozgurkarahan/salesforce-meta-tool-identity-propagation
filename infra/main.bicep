@@ -47,6 +47,12 @@ param agentsConfig string = ''
 @description('Foundry projects JSON for dynamic agent discovery')
 param foundryProjects string = ''
 
+@description('Deployed chat-app image (azd sets SERVICE_CHAT_APP_IMAGE_NAME after deploy); empty = helloworld placeholder')
+param chatAppImageName string = ''
+
+@description('Deployed salesforce-mcp image (azd sets SERVICE_SALESFORCE_MCP_IMAGE_NAME after deploy); empty = helloworld placeholder')
+param salesforceMcpImageName string = ''
+
 var baseName = toLower(environmentName)
 var resourceToken = toLower(uniqueString(subscription().id, baseName, location))
 var tags = {
@@ -180,6 +186,7 @@ module chatApp 'modules/chat-app.bicep' = {
     agentBotMsaAppId: agentBotMsaAppId
     agentsConfig: agentsConfig
     foundryProjects: foundryProjects
+    imageName: chatAppImageName
   }
 }
 
@@ -199,6 +206,7 @@ module sfMcpApp 'modules/salesforce-mcp-app.bicep' = {
     containerAppsEnvironmentId: containerEnv.outputs.containerAppsEnvironmentId
     sfInstanceUrl: sfInstanceUrl
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    imageName: salesforceMcpImageName
   }
 }
 

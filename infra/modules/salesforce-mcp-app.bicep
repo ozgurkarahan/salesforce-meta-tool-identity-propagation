@@ -28,6 +28,9 @@ param sfInstanceUrl string = ''
 @description('Application Insights connection string')
 param appInsightsConnectionString string = ''
 
+@description('Container image to run (from SERVICE_SALESFORCE_MCP_IMAGE_NAME); empty = helloworld placeholder until azd deploy')
+param imageName string = ''
+
 // Look up registry to get admin credentials
 resource registry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
   name: registryName
@@ -68,7 +71,7 @@ resource sfMcpApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'salesforce-mcp'
-          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+          image: !empty(imageName) ? imageName : 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'

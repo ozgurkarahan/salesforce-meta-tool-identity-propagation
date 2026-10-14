@@ -40,6 +40,9 @@ param agentsConfig string = ''
 @description('JSON list of Foundry projects for dynamic agent discovery [{name, endpoint}]')
 param foundryProjects string = ''
 
+@description('Container image to run (from SERVICE_CHAT_APP_IMAGE_NAME); empty = helloworld placeholder until azd deploy')
+param imageName string = ''
+
 // Look up registry to get admin credentials
 resource registry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
   name: registryName
@@ -88,7 +91,7 @@ resource chatApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'chat-app'
-          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+          image: !empty(imageName) ? imageName : 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'
