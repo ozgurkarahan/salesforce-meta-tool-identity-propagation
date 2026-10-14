@@ -145,7 +145,7 @@ APIM handles a three-phase exchange: validate the Azure AD JWT, resolve the Sale
 | `write_record` | Create, update, upsert (by external ID), delete |
 | `process_approval` | Submit, approve, reject via Salesforce approval workflows |
 
-Tool definitions plus server instructions come to roughly 1.6K tokens per model call, whatever the size of the org (character-based estimate: `python scripts/measure-tokens.py`). Field schemas are loaded on demand through `describe_object` rather than pre-loaded into the system prompt.
+The seven tool definitions come to roughly 1.65K tokens per model call (about 2.1K with the server instructions), whatever the size of the org. Measured from the server's `tools/list` with the o200k_base tokenizer (October 2026); details in [docs/deepdive.md](docs/deepdive.md#why-this-scales). Field schemas are loaded on demand through `describe_object` rather than pre-loaded into the system prompt.
 
 ### Deep Dive
 

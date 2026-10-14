@@ -79,7 +79,7 @@
                 <mxCell id="gpt4o" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg;" parent="1" vertex="1">
                     <mxGeometry x="700" y="170" width="60" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="gpt4oLabel" value="GPT-4o&#xa;Model Deployment" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontColor=#333333;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="gpt4oLabel" value="GPT-5.4&#xa;Model Deployment" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontColor=#333333;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="678" y="232" width="105" height="35" as="geometry"/>
                 </mxCell>
                 <mxCell id="sfOboConn" value="" style="image;aspect=fixed;html=1;points=[];align=center;image=img/lib/azure2/networking/Connections.svg;" parent="1" vertex="1">
@@ -220,7 +220,7 @@
                 <mxCell id="sfMcpLabel" value="Salesforce MCP&#xa;Container App" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontColor=#333333;fontSize=9;" parent="1" vertex="1">
                     <mxGeometry x="228" y="767" width="85" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="sfToolsTitle" value="7 Meta-Tools (~1,300 tokens)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B2EBF2;strokeColor=#00838F;strokeWidth=1;fontStyle=1;fontSize=9;fontFamily=Helvetica;" parent="1" vertex="1">
+                <mxCell id="sfToolsTitle" value="7 Meta-Tools (~1,650 tokens)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B2EBF2;strokeColor=#00838F;strokeWidth=1;fontStyle=1;fontSize=9;fontFamily=Helvetica;" parent="1" vertex="1">
                     <mxGeometry x="335" y="710" width="260" height="22" as="geometry"/>
                 </mxCell>
                 <mxCell id="st1" value="whoami" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F7FA;strokeColor=#00838F;fontSize=8;" parent="1" vertex="1">

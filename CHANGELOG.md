@@ -20,10 +20,15 @@ All notable changes to this project are documented here. The format follows
 - **README:** rewritten business-first: build the engagement layer once, let one
   agent act across all your systems of record, as the signed-in user. The
   env-var, project-structure and troubleshooting tables moved to
-  `docs/installation.md`. Per-tool token counts are replaced by a reproducible
-  estimate from `scripts/measure-tokens.py`.
+  `docs/installation.md`. Per-tool token counts are replaced by one measured
+  figure: ~1,650 tokens for the seven tool definitions (~2,150 with the server
+  instructions), counted from the server's `tools/list` with the o200k_base
+  tokenizer.
 - **Docs:** `docs/teams-integration.md` now describes the automated Teams
   publishing path and the v2 token audience (`api://<MCP_OAUTH_CLIENT_ID>`).
+- **Docs:** `docs/deepdive.md` and the architecture diagram
+  (`docs/diagrams/azure-architecture.*`, `site/assets/architecture.webp`) now
+  show that measured figure and the `gpt-5.4` model deployment (was "GPT-4o").
 
 ### Fixed
 
