@@ -158,7 +158,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     }
     .board-grid {
       --gap: 3.25rem; --stub: 1.25rem; --plug-h: 4.6rem; --sock-h: 3.35rem;
-      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr) minmax(0, 0.8fr) minmax(0, 1.25fr);
+      display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.84fr) minmax(0, 0.8fr) minmax(0, 1.2fr);
       column-gap: var(--gap); row-gap: 1.25rem; align-items: center;
     }
     .zone { display: contents; }
@@ -254,7 +254,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     .scope-note { margin-top: 1rem; font-size: 0.9375rem; color: var(--muted); }
 
     /* The one authored moment: an amber identity pulse travels the wires once. */
-    @media (min-width: 1000px) and (prefers-reduced-motion: no-preference) {
+    @media (min-width: 1180px) and (prefers-reduced-motion: no-preference) {
       .board .plug::after, .board .hub::before, .board .gate::before, .board .gate::after, .board .socket.is-live::before {
         background-image: linear-gradient(90deg, transparent 0 40%, var(--amber) 40% 60%, transparent 60%), linear-gradient(var(--azure), var(--azure));
         background-size: 300% 100%, 100% 100%; background-repeat: no-repeat; background-position: 100% 0, 0 0;
@@ -314,6 +314,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     .crop .plug small { font-size: 0.95rem; line-height: 1.45; margin-top: 0.15rem; }
     .crop .hub { padding: 1.6rem 1.2rem; }
     .crop .hub .i { width: 2.8rem; height: 2.8rem; }
+    .crop .hub .token .i { width: 0.85rem; height: 0.85rem; }
 
     /* What people ask */
     .asks { list-style: none; border-top: 1px solid var(--line); }
@@ -347,7 +348,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     .keynote p + p { margin-top: 0.4rem; }
 
     /* Plug in your next system */
-    .table-scroll { overflow-x: auto; display: grid; grid-template-columns: 8.5rem minmax(46rem, 1fr); column-gap: 2rem; }
+    .table-scroll { overflow-x: auto; display: grid; grid-template-columns: 7rem minmax(46rem, 1fr); column-gap: 2rem; }
     .plug-table { width: calc(100% + 1rem); margin-inline: -0.5rem; border-collapse: separate; border-spacing: 0.5rem; }
     .plug-table th, .plug-table td { text-align: left; padding: 0.8rem 1rem; }
     .plug-table thead th { height: 3rem; padding-block: 0 0.25rem; font-family: var(--head); font-weight: 600; font-size: 1rem; vertical-align: bottom; white-space: nowrap; }
@@ -368,7 +369,7 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     }
     .agent-rail .i { width: 2.6rem; height: 2.6rem; }
     .agent-rail strong { font-family: var(--head); font-weight: 600; font-size: 1.15rem; line-height: 1.1; }
-    .agent-rail span { font-size: 0.85rem; line-height: 1.35; color: var(--azure-soft); }
+    .plug-table code { white-space: nowrap; }
     .plug-table tbody th { position: relative; }
     .plug-table tbody th::before {
       content: ""; position: absolute; right: 100%; top: 50%; width: calc(2rem + 2px); height: 2px; margin-top: -1px;
@@ -407,39 +408,48 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
     .footer-links { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; }
     .footer-links a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
 
-    /* Responsive */
-    @media (max-width: 999px) {
-      .hero-head, .hero-side, .section-head-split, .why-meta, .box, .builders { grid-template-columns: 1fr; }
+    /* Responsive: the four-column plug board needs ~1180px; below that it stacks. */
+    @media (max-width: 1179px) {
       .board-grid { grid-template-columns: 1fr; row-gap: 0; }
       .zone { display: block; }
       .zone > * { grid-column: auto; }
       .zone-head { margin-bottom: 0.75rem; }
       .zone + .zone { margin-top: 2.5rem; }
-      /* Vertical connectors carry an amber identity dot on mobile. */
+      /* Vertical connectors carry an amber identity dot when stacked. */
       .zone + .zone::before {
         content: ""; display: block; width: 14px; height: 1.6rem; margin: -2.05rem auto 0.45rem;
         background: radial-gradient(circle, var(--amber) 0 5px, transparent 5.5px) center / 14px 14px no-repeat, linear-gradient(var(--azure), var(--azure)) center / 2px 100% no-repeat;
       }
-      .board .token, .crop .token { display: none; }
+      .board .token { display: none; }
+      .board .plug::after, .board .plugs::after, .board .hub::before, .board .gate::before, .board .gate::after,
+      .board .sockets::before, .board .sockets::after, .board .socket::before { display: none; }
+      .board .plugs { grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+      .board .sockets { grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+      .board .hub, .board .gate { justify-items: start; text-align: left; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 1rem; padding: 1.1rem 1.2rem; }
+      .board .hub .i { width: 2.6rem; height: 2.6rem; grid-row: span 2; }
+      .board .gate .i { width: 2.2rem; height: 2.2rem; }
+    }
+    @media (max-width: 999px) {
+      .hero-head, .hero-side, .section-head-split, .why-meta, .box, .builders { grid-template-columns: 1fr; }
+      .crop .token, .crop .plug::after, .crop .plugs::after { display: none; }
       .crop { grid-template-columns: 1fr; }
-      .crop .hub { margin-top: 2.5rem; }
+      .crop .hub { margin-top: 2.5rem; justify-items: start; text-align: left; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 1rem; padding: 1.1rem 1.2rem; }
+      .crop .hub .i { width: 2.6rem; height: 2.6rem; grid-row: span 2; }
       .crop .hub::before {
         display: block; left: 50%; right: auto; top: -2.05rem; width: 14px; height: 1.6rem; margin: 0 0 0 -7px;
         background: radial-gradient(circle, var(--amber) 0 5px, transparent 5.5px) center / 14px 14px no-repeat, linear-gradient(var(--azure), var(--azure)) center / 2px 100% no-repeat;
       }
       .crop .plug { height: auto; min-height: var(--plug-h); padding-block: 0.9rem; align-items: flex-start; }
-      .plug::after, .plugs::after, .hub::before, .gate::before, .gate::after, .sockets::before, .sockets::after, .socket::before { display: none; }
-      .plugs { grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
-      .sockets { grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
-      .hub, .gate { justify-items: start; text-align: left; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 1rem; padding: 1.1rem 1.2rem; }
-      .hub .i { width: 2.6rem; height: 2.6rem; grid-row: span 2; }
-      .gate .i { width: 2.2rem; height: 2.2rem; }
       .asks li { grid-template-columns: 1fr; }
       .ask-sys { justify-content: flex-start; }
       .journey { grid-template-columns: 1fr; gap: 1.6rem; padding-left: 4rem; }
       .journey::before { left: 1.4rem; right: auto; top: 1.4rem; bottom: 1.4rem; width: 3px; height: auto; margin: 0 0 0 -1.5px; }
       .journey .step { position: absolute; left: -4rem; top: 0; margin: 0; }
       .links { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 699px) {
+      .agent-rail, .plug-table tbody th::before { display: none; }
+      .table-scroll { grid-template-columns: minmax(46rem, 1fr); }
     }
     @media (max-width: 560px) {
       .topbar .brand { display: none; }
@@ -692,7 +702,6 @@ FORM: Plug board, candidate 5 of 7; staging: one amber identity pulse travels th
           <div class="agent-rail" aria-hidden="true">
             <svg class="i"><use href="#i-spark"/></svg>
             <strong>One agent</strong>
-            <span>Same Teams experience, same identity flow</span>
           </div>
           <table class="plug-table">
             <caption class="sr-only">What each system of record needs. Salesforce and ServiceNow are included; the others follow the same pattern and are not included.</caption>
