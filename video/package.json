@@ -1,0 +1,26 @@
+{
+  "name": "customer360-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Customer 360 Assistant story video (Remotion)",
+  "scripts": {
+    "studio": "remotion studio --no-open",
+    "render": "pwsh -NoProfile -File scripts/render.ps1",
+    "still": "remotion still Customer360Story --scale=0.5",
+    "srt": "npx --yes tsx scripts/export-srt.ts"
+  },
+  "dependencies": {
+    "@fontsource/bricolage-grotesque": "5.3.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/instrument-sans": "5.3.0",
+    "@remotion/cli": "4.0.532",
+    "@remotion/transitions": "4.0.532",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.532"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  }
+}

@@ -8,6 +8,14 @@
 
 > **📖 Identity Propagation series** — this repo is part of a series on end-to-end user identity propagation for AI agents: no service accounts in the data path, every action traceable to a real user. Read the story: [From Theory to Production: Salesforce Meta-Tool & Identity Propagation](https://www.linkedin.com/pulse/from-theory-production-salesforce-meta-tools-identity-ozgur-karahan-ch30e/). Companion repos: [propagate-id-entra](https://github.com/ozgurkarahan/propagate-id-entra) · [snow-meta-tool](https://github.com/ozgurkarahan/snow-meta-tool)
 
+## See It in Action (2:40)
+
+**Customer 360 Assistant** in Microsoft Teams: a 360° view of a customer across Salesforce and ServiceNow, then a CRM update from the chat, with every call made as the signed-in user.
+
+https://github.com/user-attachments/assets/82847835-87b0-42e4-9bb8-fa39cc140551
+
+> Animated mock-ups with demo data (Contoso, Alice, Bob). Source and render instructions: [video/](video/README.md).
+
 ## Architecture
 
 <img src="docs/diagrams/azure-architecture.png" alt="Azure Architecture — Identity-Propagated MCP Meta-Tools">
