@@ -55,14 +55,16 @@ The user asks: *"Show me my open opportunities worth over $100k"*
 
 ### Why This Scales
 
-The tool surface is **fixed**: seven tools, ~1,300 tokens. Whether the org has 50 objects or 5,000, the MCP server definition doesn't change.
+The tool surface is **fixed**: seven tools, ~1,650 tokens of tool definitions (plus ~500 tokens of server instructions). Whether the org has 50 objects or 5,000, the MCP server definition doesn't change.
 
 | Approach | Token cost | Coverage |
 |----------|------------|----------|
 | Full OpenAPI spec | 5,000-15,000 | Hundreds of endpoints, most irrelevant |
 | RAG documentation chunks | 2,000-10,000 | Partial, depends on retrieval quality |
 | One tool per object | ~500 x N objects | Scales linearly, N can be 100+ |
-| **This MCP server** | **~1,300 fixed** | **All objects, all fields, all operations** |
+| **This MCP server** | **~1,650 fixed** | **All objects, all fields, all operations** |
+
+*This server's figure: tool names, descriptions and JSON parameter schemas as returned by `tools/list`, counted with the o200k_base tokenizer (October 2026).*
 
 ---
 
