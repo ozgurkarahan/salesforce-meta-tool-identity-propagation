@@ -22,12 +22,11 @@ truncated outputs and truncated consent links.
 import argparse
 import base64
 import datetime as dt
-import io
 import json
 import os
 import subprocess
 import sys
-import zipfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -111,15 +110,6 @@ def token_claims(cred):
     return {k: claims.get(k) for k in ("oid", "upn", "preferred_username", "tid")}
 
 
-def zip_skill(skill_dir):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in sorted(skill_dir.rglob("*")):
-            if f.is_file():
-                zf.write(f, f.relative_to(skill_dir).as_posix())
-    return buf.getvalue()
-
-
 def connection_url(name):
     sub = az("account show --query id -o tsv")
     return (f"https://management.azure.com/subscriptions/{sub}"
@@ -139,18 +129,10 @@ def sanitize(obj, limit=400):
 # ---------------------------------------------------------------------------
 
 def upload_skills(pc):
-    from azure.ai.projects.models import CreateSkillVersionFromFilesBody
-    versions = {}
-    for skill_dir in sorted(p for p in SKILLS_DIR.iterdir() if (p / "SKILL.md").exists()):
-        name = skill_dir.name
-        sv = pc.beta.skills.create_from_files(
-            name,
-            content=CreateSkillVersionFromFilesBody(
-                files=[(f"{name}.zip", zip_skill(skill_dir))], default=True),
-        )
-        versions[name] = sv.version
-        print(f"  skill {name} -> v{sv.version}")
-    return versions
+    """Same upload path as azd (content-compared, LF-normalized, new version only on change)."""
+    sys.path.insert(0, str(REPO / "hooks"))
+    import postprovision
+    return postprovision.ensure_skills(pc)
 
 
 def ensure_toolbox_connection(auth, toolbox_url):
@@ -293,6 +275,25 @@ def summarize_items(items):
     return rows
 
 
+def wait_for_consent(timeout=None):
+    """ENTER on a TTY; otherwise poll for .spike/consent.ok (lets a background run continue)."""
+    if timeout is None:
+        timeout = int(os.environ.get("SPIKE_CONSENT_TIMEOUT", "1800"))
+    if sys.stdin.isatty() and not os.environ.get("SPIKE_CONSENT_FILE"):
+        input("Press ENTER after consenting...")
+        return True
+    flag = OUT_DIR / "consent.ok"
+    print(f"Waiting for {flag} (create it after consenting)...", flush=True)
+    deadline = dt.datetime.now() + dt.timedelta(seconds=timeout)
+    while not flag.exists():
+        if dt.datetime.now() > deadline:
+            print("Timed out waiting for consent (evidence still written)")
+            return False
+        time.sleep(5)
+    flag.unlink()
+    return True
+
+
 def cmd_chat(args):
     OUT_DIR.mkdir(exist_ok=True)
     pc, cred = project_client()
@@ -336,8 +337,9 @@ def cmd_chat(args):
         full = [getattr(i, "consent_link", "") for i in resp.output
                 if getattr(i, "type", "") == "oauth_consent_request"]
         print("\nConsent required. Open this link in a browser signed in as the SAME user:")
-        print(f"  {full[0]}")
-        input("Press ENTER after consenting...")
+        print(f"  {full[0]}", flush=True)
+        if not wait_for_consent():
+            break
         prev = resp.id
 
     record = {"time": dt.datetime.now(dt.timezone.utc).isoformat(), "user": who,

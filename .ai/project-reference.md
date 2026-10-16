@@ -26,8 +26,9 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 - **MSYS path fix:** `export MSYS_NO_PATHCONV=1` before `az` commands with resource ID paths
 - **ACR builds:** `az acr build --no-logs` avoids charmap encoding errors on Windows
 
-### Foundry SDK (`azure-ai-projects` v2 beta — Responses API)
+### Foundry SDK (`azure-ai-projects==2.8.0` — Responses API)
 
+- `AIProjectClient(endpoint, credential, allow_preview=True)` — `allow_preview` is needed for `beta.skills` and toolboxes
 - `AIProjectClient` from `azure-ai-projects` — connects to the project endpoint
 - Agent creation: `project_client.agents.create_version()` with `PromptAgentDefinition` + `MCPTool`
 - Agent execution: `project_client.get_openai_client()` → `openai_client.responses.create()`
@@ -136,6 +137,30 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 - `azd provision` preserves deployed container images: `SERVICE_CHAT_APP_IMAGE_NAME` / `SERVICE_SALESFORCE_MCP_IMAGE_NAME` (written by `azd deploy`) are passed to the container app modules. On a fresh env (vars unset) the first provision still uses the helloworld placeholder until `azd deploy` runs. (Before this, a provision-only run reset both apps to helloworld → ingress timeouts, incident 2026-07-28.)
 
 ---
+
+## v3 Spike — Skills + Toolbox (2026-10-14, env `sf-mcp-obo`)
+
+Script: `scripts/spike_toolbox_identity.py` (setup / chat / report / cleanup). Evidence is sanitized in `.spike/` (gitignored). Spike resources (`spike-*` agents, toolboxes and the `spike-v3-salesforce-assistant` application) live in the project until `cleanup`.
+
+| # | Question | Result |
+|---|----------|--------|
+| 1 | Native skills (`PromptAgentDefinition.skills`) on a prompt agent | **Inert without a harness.** The version stores the `SkillReference`, but nothing is injected: a "which skills do you have?" turn used 34 input tokens and the model invented a list. `GitHubCopilotHarness()` returns `forbidden: Agent creation with kind 'prompt' and harness type 'github_copilot_preview' is not enabled for this subscription` |
+| 2 | Toolbox skills | The toolbox `/mcp` advertises the `io.modelcontextprotocol/skills` extension and lists skills as **resources** (`skill://<name>/SKILL.md` plus `skill://index.json`, SEP-2640). `prompts/list` → -32601. The Responses MCP tool only uses `tools/list`, so a prompt agent never sees them. MS Learn: consumers are MCP clients with resource support (MAF `AgentSkillsProvider.UseMcpSkills`, Copilot, Claude Code) |
+| 3 | Toolbox with only skills (`tools=[]`) | Rejected at tool enumeration: `List of tool configs not provided in _meta.tools` |
+| 4 | Agent → toolbox auth | `MCPTool(server_url=<toolbox /mcp>)` **without** `project_connection_id` or a token works, because Foundry authenticates the agent to its own project's toolbox. Verified through both the agent endpoint (`get_openai_client(agent_name=…)`) and `agent_reference`. No embedded token, so no 1h expiry by construction. **>1h check passed:** a fresh call 79 min after setup (23:03Z) still reached the toolbox (`mcp_list_tools` → `oauth_consent_request`, no auth error); evidence `.spike/chat-spike-c360-toolbox-*-skills-20261014T230311.json` |
+| 5 | OAuth consent through the toolbox | Surfaces as a normal `oauth_consent_request` with `server_label=c360_toolbox` (the system isn't named). The consent `LogConnectionId` differs from the direct SF connection's, so toolbox users consent separately from v2 direct consents |
+| 6 | Tool naming through the toolbox | `<server_label>___<tool>` (e.g. `mslearn___microsoft_docs_search`, so `salesforce_mcp___whoami`). Tools carry `_meta.tool_configuration.server_label` |
+| 7 | Two users, distinct SF/SN identities through the toolbox | **User 1 PASS (2026-10-16):** through `spike-c360-toolbox` the SF consent and then a separate SN consent (a different connector) surfaced, the conversation continued, and `salesforce_mcp___whoami` → `ozgurkarahan…@agentforce.com`, `servicenow_mcp___query sys_user` → `ozgurkarahan`. **User 2 not run:** the second SF-mapped Entra user is `admin@MngEnvMCAP549101` (→ SF `demo.nodelete@…`); demo.alice/bob have no SF FederationIdentifier. The device login landed on the same account. Open gate before `C360_TOOLS_MODE=toolbox`. Caution: `az logout` under a separate `AZURE_CONFIG_DIR` still signs the account out of the Windows broker (WAM) for the main az config |
+| 8 | `agent_reference` with `version` | Works: pins an exact version (used for the pre-route smoke test) |
+| 9 | Agent Application Responses endpoint | `POST {project}/applications/{app}/protocols/openai/responses?api-version=2025-11-15-preview` with an Entra bearer. **Stateless**: `previous_response_id` is rejected |
+| 10 | Application routing PUT | Applied asynchronously: poll until `trafficRoutingPolicy` shows the new deployment. Echoing the server-populated `authorizationPolicy.isolationKeySource` back in the PUT is rejected (`Could not find member 'isolationKeySource'`), so send only `authorizationScheme` |
+| 11 | `create_version` dedupe | An identical definition **and** metadata returns the existing (older) version, so "latest" doesn't move. The hook adds a `published_at` nonce and asserts the returned version is latest |
+| 12 | Deleting agent deployments/applications | `DELETE …/agentDeployments/<name>` and `DELETE …/applications/<name>` return `SystemError` (RP). The spike app `spike-v3-salesforce-assistant` (and its agent) is left in place |
+| 13 | Web chat vs Teams | The web chat calls `agent_reference` without a version and gets **latest**; Teams follows the application route. `--rollback` therefore re-routes **and** republishes the previous definition as latest, and a failed pre-route smoke test also restores latest |
+
+**Decision (approved 2026-10-16, deployed as SF v31 / C360 v23):** keep `customer360-assistant` on direct SF+SN MCP tools (`C360_TOOLS_MODE=direct`). Keep the toolbox code path behind the flag until gate 7 passes. Deliver skills by compiling the pinned Foundry skill versions into the instructions (`SKILLS_MODE=inline`); `native` is ready for when the harness is enabled.
+
+To finish gate 7: `python scripts/spike_toolbox_identity.py chat --agent spike-c360-toolbox --probe identity` as the admin, then again with `AZURE_CONFIG_DIR=<dir>` after `az login` as the demo user. Complete the SF and SN consents, then check the SF Login History and the APIM gateway logs.
 
 ## OBO (JWT Bearer) Flow — Verified
 

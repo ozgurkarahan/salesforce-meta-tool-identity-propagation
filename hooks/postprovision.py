@@ -1,25 +1,23 @@
-"""Post-provision hook: upload cert, create Entra app, configure auth, create Foundry agent,
-deploy agent application, bootstrap Bot Service, publish Teams app.
+"""Post-provision hook (v3): certs, Entra app, skills, agents, staged publish, Bot Service, Teams.
 
 After Bicep deploys Azure resources, this hook:
 0. Uploads SF JWT Bearer cert to Key Vault + creates APIM cert binding (if cert exists locally)
 1. Creates Chat App Entra app registration (az CLI — delegated permissions)
-2. Creates the Foundry agent with Salesforce MCP tool (OBO connection)
+2. Ensures the Salesforce OAuth2 identity-passthrough connection
 3. Updates Chat App Container App env vars
-4. Recreates OBO connection via ARM REST + updates APIM Named Values
-5. Creates/updates Agent Application (REST-only — enables Activity Protocol endpoint)
-6. Creates/updates Agent Deployment (links agent version to application)
-6b. Creates Customer 360 agent (dual MCP: SF + SN, requires servicenow-obo connection)
-6c. Creates Customer 360 Agent Application
-6d. Creates Customer 360 Agent Deployment
-7. Bootstraps Bot Service + channels via ARM REST (first-run only — Bicep takes over after)
-8. Publishes Teams app to org catalog via Graph API (org-wide distribution)
+4. Updates OBO APIM Named Values
+5. Uploads skills/<name> as Foundry skill versions (new version only on change)
+6. Creates salesforce-assistant and customer360-assistant versions (only when changed);
+   customer360 uses direct SF+SN MCP tools or one toolbox (C360_TOOLS_MODE)
+7. Per agent: Agent Application + immutable '<agent>-v<N>' deployment, pre-route
+   smoke test of the exact version, route 100%, assert (previous route recorded
+   for `python hooks/postprovision.py --rollback`)
+8. Per agent: Bot Service bootstrap / adoption (Bicep manages it afterwards)
+9. Per agent: Teams app in the org catalog via Graph (non-fatal)
 
-Uses az CLI for Entra ops because the Graph Bicep extension requires
-Application.ReadWrite.All on the ARM deployment identity, which is not
-available in managed tenants.
-
-Uses azure-ai-projects v2 SDK for Foundry agent (no ARM resource type).
+Steps 5-8 are fatal on failure. Uses az CLI for Entra ops because the Graph Bicep
+extension requires Application.ReadWrite.All on the ARM deployment identity, which
+is not available in managed tenants.
 """
 
 # FLEET_PATCH_V1
@@ -634,286 +632,371 @@ meeting-prep and change-risk requests.
 """
 
 
-def create_agent():
-    """Create a Foundry agent with the Salesforce MCP tool using the v2 SDK.
+# ---------------------------------------------------------------------------
+# v3: skills, agents, toolbox
+# ---------------------------------------------------------------------------
 
-    Uses the OBO connection (OAuth2 identity passthrough — see
-    ensure_obo_connection for why UserEntraToken must not be used) and the OBO
-    APIM endpoint.
-    Returns the agent version number (for use by create_agent_deployment).
-    """
-    project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SKILLS_DIR = os.path.join(REPO_ROOT, "skills")
+AGENT_MODEL = os.environ.get("AGENT_MODEL", "gpt-5.4")
 
-    if not project_endpoint:
-        print("WARNING: Missing AI_FOUNDRY_PROJECT_ENDPOINT — skipping agent creation.")
-        return None
+SF_TOOLS = ["whoami", "list_objects", "describe_object", "soql_query",
+            "search_records", "write_record", "process_approval"]
+SN_TOOLS = ["discover", "query", "write"]
 
-    sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
-    if not sf_mcp_endpoint:
-        apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-        if apim_gateway:
-            sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
-    connection_name = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
+SF_AGENT_SKILLS = ["salesforce-crm"]
+C360_AGENT_SKILLS = ["salesforce-crm", "servicenow-itsm", "customer360-correlation",
+                     "revenue-at-risk", "meeting-prep", "change-risk"]
 
-    if not sf_mcp_endpoint:
-        print("WARNING: No SF MCP endpoint available — skipping agent creation.")
-        return None
+C360_STARTERS = [
+    "Give me a Customer 360 view for Contoso Ltd",
+    "Acme Corp reports API gateway outages \u2014 what's the full picture?",
+    "Prepare me for my call with Fabrikam Inc tomorrow",
+    "Which strategic accounts have the most open incidents? Show revenue at risk",
+    "Show me unresolved P1 incidents and correlated Salesforce cases",
+    "P1/P2 incidents with affected Salesforce accounts \u2014 rank by revenue at risk",
+]
 
-    print(f"\nProject endpoint: {project_endpoint}")
-    print(f"SF MCP endpoint:  {sf_mcp_endpoint}")
-    print(f"Connection:       {connection_name}")
+ARM_APPS_API = "2026-01-15-preview"
 
-    from azure.identity import DefaultAzureCredential
+
+def _project_client():
     from azure.ai.projects import AIProjectClient
-    from azure.ai.projects.models import (
-        PromptAgentDefinition, MCPTool,
-    )
+    from azure.identity import DefaultAzureCredential
+    endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT", "")
+    if not endpoint:
+        raise RuntimeError("Missing AI_FOUNDRY_PROJECT_ENDPOINT")
+    return AIProjectClient(endpoint=endpoint, credential=DefaultAzureCredential(),
+                           allow_preview=True)
 
-    credential = DefaultAzureCredential()
-    project_client = AIProjectClient(
-        endpoint=project_endpoint,
-        credential=credential,
-    )
 
-    agent_name = "salesforce-assistant"
-    print(f"\nCreating agent '{agent_name}'...")
-
-    # Build Salesforce MCPTool
-    sf_tool_kwargs = {
-        "server_label": "salesforce_mcp",
-        "server_url": sf_mcp_endpoint,
-        "require_approval": "never",
-        "allowed_tools": [
-            "whoami",
-            "list_objects",
-            "describe_object",
-            "soql_query",
-            "search_records",
-            "write_record",
-            "process_approval",
-        ],
-    }
-
-    if connection_name:
-        sf_tool_kwargs["project_connection_id"] = connection_name
-        print(f"Connection: {connection_name}")
-
-    sf_mcp_tool = MCPTool(**sf_tool_kwargs)
-    tools = [sf_mcp_tool]
-
-    instructions = SALESFORCE_AGENT_INSTRUCTIONS
-
-    # Retry with backoff — after fresh deploy, the Foundry data plane
-    # takes 5-15 min to propagate. "Project not found" is transient.
-    max_retries = 6
-    retry_delay = 10
-    for attempt in range(max_retries):
+def _with_propagation_retry(fn, what):
+    """After a fresh deploy the Foundry data plane takes 5-15 min; 'not found' is transient."""
+    delay = 10
+    for attempt in range(6):
         try:
-            agent = project_client.agents.create_version(
-                agent_name=agent_name,
-                definition=PromptAgentDefinition(
-                    model="gpt-5.4",
-                    instructions=instructions,
-                    tools=tools,
-                ),
-            )
-            print(f"Agent created: name={agent.name}, version={agent.version}, id={agent.id}")
-            print(f"  Tools: {len(tools)} tool(s) configured")
-            print("\nOBO flow requires no consent. Send a chat message to test.")
-            print(f"Agent: {agent.name} v{agent.version}")
-            return agent.version
+            return fn()
         except Exception as e:
-            if "not found" in str(e).lower() and attempt < max_retries - 1:
-                print(f"  Attempt {attempt + 1}/{max_retries}: {e}")
-                print(f"  Retrying in {retry_delay}s (waiting for project propagation)...")
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 60)
+            if "not found" in str(e).lower() and attempt < 5:
+                print(f"  {what}: attempt {attempt + 1}/6 failed ({e}); retrying in {delay}s")
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
             else:
                 raise
 
 
-def create_customer360_agent():
-    """Create a Foundry agent with both Salesforce and ServiceNow MCP tools.
+def _is_not_found(exc):
+    from azure.core.exceptions import ResourceNotFoundError
+    return isinstance(exc, ResourceNotFoundError) or getattr(exc, "status_code", None) == 404
 
-    Connects to the SF and SN OAuth2 OBO connections for unified CRM+ITSM
-    queries. Pre-checks that the ServiceNow connection exists.
-    Returns the agent version number.
+
+def _fingerprint(obj):
+    import hashlib
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _sf_mcp_endpoint():
+    endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
+    gateway = os.environ.get("APIM_GATEWAY_URL", "")
+    return endpoint or (f"{gateway}/salesforce-mcp-obo/mcp" if gateway else "")
+
+
+def _sn_mcp_endpoint():
+    gateway = os.environ.get("APIM_GATEWAY_URL", "")
+    return f"{gateway}/servicenow-mcp-obo/mcp" if gateway else ""
+
+
+# --- Skills ----------------------------------------------------------------
+
+def _local_skill_files(name):
+    """Files of skills/<name>, text normalized to LF so uploads are platform-independent."""
+    root = os.path.join(SKILLS_DIR, name)
+    files = {}
+    for dirpath, _, filenames in os.walk(root):
+        for fn in sorted(filenames):
+            path = os.path.join(dirpath, fn)
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            with open(path, "rb") as f:
+                data = f.read()
+            if fn.endswith((".md", ".txt", ".json", ".yaml", ".yml")):
+                data = data.replace(b"\r\n", b"\n")
+            files[rel] = data
+    return files
+
+
+def _zip_files(files):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel in sorted(files):
+            info = zipfile.ZipInfo(rel, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, files[rel])
+    return buf.getvalue()
+
+
+def _unzip(data):
+    import io
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return {n: zf.read(n) for n in zf.namelist() if not n.endswith("/")}
+
+
+def local_skill_names():
+    return sorted(d for d in os.listdir(SKILLS_DIR)
+                  if os.path.isfile(os.path.join(SKILLS_DIR, d, "SKILL.md")))
+
+
+def ensure_skills(project_client):
+    """Upload skills/<name> as Foundry skill versions; new version only when content changed.
+
+    Returns {skill_name: exact_version}.
     """
-    project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT")
-    if not project_endpoint:
-        print("WARNING: Missing AI_FOUNDRY_PROJECT_ENDPOINT — skipping Customer 360 agent.")
-        return None
-
-    # SF MCP endpoint
-    sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_OBO_ENDPOINT", "")
-    if not sf_mcp_endpoint:
-        apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-        if apim_gateway:
-            sf_mcp_endpoint = f"{apim_gateway}/salesforce-mcp-obo/mcp"
-    sf_connection = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
-
-    if not sf_mcp_endpoint:
-        print("WARNING: No SF MCP endpoint available — skipping Customer 360 agent.")
-        return None
-
-    # SN MCP endpoint — derive from APIM gateway
-    apim_gateway = os.environ.get("APIM_GATEWAY_URL", "")
-    sn_mcp_endpoint = f"{apim_gateway}/servicenow-mcp-obo/mcp" if apim_gateway else ""
-    sn_connection = os.environ.get("SN_OBO_CONNECTION_NAME", "servicenow-obo-oauth2")
-
-    if not sn_mcp_endpoint:
-        print("WARNING: No SN MCP endpoint available — skipping Customer 360 agent.")
-        return None
-
-    # Pre-check: verify servicenow-obo connection exists in Foundry
-    sub_id = run("az account show --query id -o tsv")
-    rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
-    account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
-    project_name = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
-    conn_url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.CognitiveServices/accounts/{account}"
-        f"/projects/{project_name}/connections/{sn_connection}"
-        f"?api-version=2025-04-01-preview"
-    )
-    conn_check = run(
-        f'az rest --method GET --url "{conn_url}"',
-        parse_json=True,
-    )
-    if not conn_check or not isinstance(conn_check, dict):
-        print(f"WARNING: '{sn_connection}' connection not found in Foundry project.")
-        print("  Create it as an OAuth2 identity-passthrough connection (see "
-              "ensure_obo_connection) or deploy snow-meta-tool first, then re-run.")
-        print("  Skipping Customer 360 agent creation.")
-        return None
-    sn_auth_type = (conn_check.get("properties") or {}).get("authType", "")
-    if sn_auth_type != "OAuth2":
-        print(f"WARNING: '{sn_connection}' has authType '{sn_auth_type}' (expected "
-              "OAuth2). Agents wired to it will fail with the 'untrusted MCP "
-              "endpoint' error. Skipping Customer 360 agent creation.")
-        return None
-
-    print(f"\nProject endpoint: {project_endpoint}")
-    print(f"SF MCP endpoint:  {sf_mcp_endpoint}")
-    print(f"SF Connection:    {sf_connection}")
-    print(f"SN MCP endpoint:  {sn_mcp_endpoint}")
-    print(f"SN Connection:    {sn_connection}")
-
-    from azure.identity import DefaultAzureCredential
-    from azure.ai.projects import AIProjectClient
-    from azure.ai.projects.models import (
-        PromptAgentDefinition, MCPTool,
-    )
-
-    credential = DefaultAzureCredential()
-    project_client = AIProjectClient(
-        endpoint=project_endpoint,
-        credential=credential,
-    )
-
-    agent_name = "customer360-assistant"
-    print(f"\nCreating agent '{agent_name}'...")
-
-    # Build Salesforce MCPTool
-    sf_mcp_tool = MCPTool(
-        server_label="salesforce_mcp",
-        server_url=sf_mcp_endpoint,
-        project_connection_id=sf_connection,
-        require_approval="never",
-        allowed_tools=[
-            "whoami",
-            "list_objects",
-            "describe_object",
-            "soql_query",
-            "search_records",
-            "write_record",
-            "process_approval",
-        ],
-    )
-
-    # Build ServiceNow MCPTool
-    sn_mcp_tool = MCPTool(
-        server_label="servicenow_mcp",
-        server_url=sn_mcp_endpoint,
-        project_connection_id=sn_connection,
-        require_approval="never",
-        allowed_tools=["discover", "query", "write"],
-    )
-
-    tools = [sf_mcp_tool, sn_mcp_tool]
-
-    instructions = CUSTOMER360_AGENT_INSTRUCTIONS
-
-    # Retry with backoff
-    max_retries = 6
-    retry_delay = 10
-    for attempt in range(max_retries):
+    from azure.ai.projects.models import CreateSkillVersionFromFilesBody
+    versions = {}
+    for name in local_skill_names():
+        local = _local_skill_files(name)
+        latest = None
         try:
-            agent = project_client.agents.create_version(
-                agent_name=agent_name,
-                definition=PromptAgentDefinition(
-                    model="gpt-5.4",
-                    instructions=instructions,
-                    tools=tools,
-                ),
-            )
-
-            # Add conversation starters via REST API (SDK doesn't expose this yet).
-            # Foundry UI stores starters in TWO places:
-            #   1. definition.conversation_starters — array of {"text": "..."}
-            #   2. metadata.starterPrompts — newline-separated string (UI reads this)
-            # We read the SDK-created version, add both fields, and POST a new version.
-            _starters = [
-                "Give me a Customer 360 view for Contoso Ltd",
-                "Acme Corp reports API gateway outages \u2014 what's the full picture?",
-                "Prepare me for my call with Fabrikam Inc tomorrow",
-                "Which strategic accounts have the most open incidents? Show revenue at risk",
-                "Show me unresolved P1 incidents and correlated Salesforce cases",
-                "P1/P2 incidents with affected Salesforce accounts \u2014 rank by revenue at risk",
-            ]
-            final_version = agent.version
-            try:
-                import httpx as _httpx
-                _token = credential.get_token("https://ai.azure.com/.default").token
-                _headers = {"Authorization": f"Bearer {_token}", "Content-Type": "application/json"}
-                _params = {"api-version": "2025-05-15-preview"}
-                _r = _httpx.get(
-                    f"{project_endpoint}/agents/{agent_name}/versions/{agent.version}",
-                    headers=_headers, params=_params, timeout=30,
-                )
-                if _r.status_code == 200:
-                    _body = _r.json()
-                    _defn = _body["definition"]
-                    _defn["conversation_starters"] = [{"text": s} for s in _starters]
-                    _meta = _body.get("metadata", {})
-                    _meta["starterPrompts"] = "\n".join(_starters)
-                    _r2 = _httpx.post(
-                        f"{project_endpoint}/agents/{agent_name}/versions",
-                        headers=_headers, params=_params,
-                        json={"definition": _defn, "metadata": _meta},
-                        timeout=30,
-                    )
-                    if _r2.status_code == 200:
-                        final_version = _r2.json().get("version", agent.version)
-                        print(f"  Conversation starters added (v{final_version})")
-                    else:
-                        print(f"  WARNING: Failed to add starters: {_r2.status_code}")
-            except Exception as _e:
-                print(f"  WARNING: conversation starters skipped: {_e}")
-            print(f"Agent created: name={agent.name}, version={final_version}, id={agent.id}")
-            print(f"  Tools: {len(tools)} tool(s) configured (SF MCP + SN MCP)")
-            print(f"Agent: {agent.name} v{final_version}")
-            return final_version
+            latest = project_client.beta.skills.get(name).latest_version
         except Exception as e:
-            if "not found" in str(e).lower() and attempt < max_retries - 1:
-                print(f"  Attempt {attempt + 1}/{max_retries}: {e}")
-                print(f"  Retrying in {retry_delay}s (waiting for project propagation)...")
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 60)
-            else:
+            if not _is_not_found(e):
                 raise
+        if latest:
+            remote = _unzip(b"".join(project_client.beta.skills.download_version(name, latest)))
+            if remote == local:
+                versions[name] = latest
+                print(f"  skill {name}: unchanged (v{latest})")
+                continue
+        created = project_client.beta.skills.create_from_files(
+            name,
+            content=CreateSkillVersionFromFilesBody(
+                files=[(f"{name}.zip", _zip_files(local))], default=True),
+        )
+        versions[name] = created.version
+        print(f"  skill {name}: uploaded v{created.version}")
+    return versions
 
+
+def compose_instructions(base, skill_names, versions):
+    """Lean base prompt + the exact Foundry skill versions this agent uses.
+
+    Prompt agents cannot load skills at runtime yet: PromptAgentDefinition.skills
+    needs the GitHub Copilot harness (preview, not enabled on every subscription)
+    and toolbox skills are MCP *resources*, which the Responses MCP tool does not
+    read. Inlining keeps one versioned source of truth until runtime loading works.
+    """
+    parts = [base.rstrip(), "## Skills",
+             "Each skill below is a versioned Foundry skill. Follow the one that "
+             "matches the request."]
+    for name in skill_names:
+        body = _local_skill_files(name)["SKILL.md"].decode("utf-8").strip()
+        parts.append(f'<skill name="{name}" version="{versions[name]}">\n{body}\n</skill>')
+    return "\n\n".join(parts) + "\n"
+
+
+def _skill_settings(base_instructions, skill_names, versions):
+    """Definition kwargs for SKILLS_MODE=inline (default) or native (needs the harness)."""
+    mode = os.environ.get("SKILLS_MODE", "inline").lower()
+    if mode == "native":
+        from azure.ai.projects.models import GitHubCopilotHarness, SkillReference
+        return {"instructions": base_instructions,
+                "skills": [SkillReference(name=n, version=versions[n]) for n in skill_names],
+                "harness": GitHubCopilotHarness()}
+    return {"instructions": compose_instructions(base_instructions, skill_names, versions)}
+
+
+def _latest_agent_version(project_client, agent_name):
+    try:
+        return project_client.agents.get(agent_name).as_dict()["versions"]["latest"]
+    except Exception as e:
+        if not _is_not_found(e):
+            raise
+        return None
+
+
+def _create_latest_version(project_client, agent_name, definition, metadata):
+    """create_version that always yields a NEW latest version.
+
+    Foundry dedupes identical definition+metadata to the existing version, which
+    would leave 'latest' (what agent_reference callers such as the web chat get)
+    on another definition. A publish timestamp keeps every create distinct.
+    """
+    metadata = {**metadata, "published_at": str(int(time.time()))}
+    av = _with_propagation_retry(
+        lambda: project_client.agents.create_version(
+            agent_name=agent_name, definition=definition, metadata=metadata),
+        f"create {agent_name}")
+    latest = _latest_agent_version(project_client, agent_name)
+    if not latest or str(latest["version"]) != str(av.version):
+        raise RuntimeError(f"{agent_name}: created v{av.version} but latest is "
+                           f"v{latest and latest['version']}")
+    return av.version
+
+
+def _ensure_agent_version(project_client, agent_name, definition, metadata=None):
+    """Create a new agent version only when the definition changed.
+
+    Returns (version, created).
+    """
+    metadata = dict(metadata or {})
+    fp = _fingerprint({"definition": definition.as_dict(), "metadata": metadata})
+    latest = _latest_agent_version(project_client, agent_name)
+    if latest and (latest.get("metadata") or {}).get("v3_fingerprint") == fp:
+        print(f"  {agent_name}: definition unchanged (v{latest['version']})")
+        return latest["version"], False
+    version = _create_latest_version(project_client, agent_name, definition,
+                                     {**metadata, "v3_fingerprint": fp})
+    print(f"  {agent_name}: created v{version}")
+    return version, True
+
+
+def _restore_as_latest(project_client, agent_name, version):
+    """Republish an earlier version's definition as the newest version."""
+    old = project_client.agents.get_version(agent_name, str(version))
+    meta = {k: v for k, v in (old.metadata or {}).items() if k != "published_at"}
+    restored = _create_latest_version(project_client, agent_name, old.definition,
+                                      {**meta, "restored_from": str(version)})
+    print(f"  {agent_name}: v{version} republished as v{restored} (latest)")
+    return restored
+
+
+def _connection_url(name):
+    return f"{_arm_project_base()}/connections/{name}?api-version=2025-04-01-preview"
+
+
+def _require_oauth2_connection(name):
+    conn = run(f'az rest --method GET --url "{_connection_url(name)}"', parse_json=True)
+    if not conn or not isinstance(conn, dict):
+        raise RuntimeError(
+            f"Connection '{name}' not found in the Foundry project. Create it as an OAuth2 "
+            "identity-passthrough connection (see ensure_obo_connection) or deploy "
+            "snow-meta-tool first.")
+    auth_type = (conn.get("properties") or {}).get("authType", "")
+    if auth_type != "OAuth2":
+        raise RuntimeError(
+            f"Connection '{name}' has authType '{auth_type}' (expected OAuth2); agents wired "
+            "to it fail with 'Cannot pass Microsoft token to untrusted MCP endpoint'.")
+
+
+def create_agent(project_client, skill_versions):
+    """salesforce-assistant: SF MCP tool (OAuth2 OBO connection) + salesforce-crm skill."""
+    from azure.ai.projects.models import MCPTool, PromptAgentDefinition
+
+    sf_url = _sf_mcp_endpoint()
+    if not sf_url:
+        raise RuntimeError("No SF MCP endpoint (APIM_SF_MCP_OBO_ENDPOINT / APIM_GATEWAY_URL)")
+    connection = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
+    print(f"  SF MCP: {sf_url} (connection {connection})")
+
+    definition = PromptAgentDefinition(
+        model=AGENT_MODEL,
+        tools=[MCPTool(server_label="salesforce_mcp", server_url=sf_url,
+                       project_connection_id=connection, require_approval="never",
+                       allowed_tools=SF_TOOLS)],
+        **_skill_settings(SALESFORCE_AGENT_INSTRUCTIONS, SF_AGENT_SKILLS, skill_versions),
+    )
+    version, _ = _ensure_agent_version(
+        project_client, "salesforce-assistant", definition,
+        metadata={"skills": ",".join(f"{n}@{skill_versions[n]}" for n in SF_AGENT_SKILLS)})
+    return version
+
+
+def ensure_customer360_toolbox(project_client, skill_versions, sf_url, sf_conn, sn_url, sn_conn):
+    """One toolbox: SF + SN MCP servers (each on its OAuth2 OBO connection) + all skills.
+
+    Returns the version-pinned toolbox MCP URL.
+    """
+    from azure.ai.projects.models import MCPToolboxTool, ToolboxSkillReference
+
+    name = os.environ.get("C360_TOOLBOX_NAME", "customer360-toolbox")
+    tools = [
+        MCPToolboxTool(server_label="salesforce_mcp", server_url=sf_url,
+                       project_connection_id=sf_conn, require_approval="never",
+                       allowed_tools=SF_TOOLS),
+        MCPToolboxTool(server_label="servicenow_mcp", server_url=sn_url,
+                       project_connection_id=sn_conn, require_approval="never",
+                       allowed_tools=SN_TOOLS),
+    ]
+    skills = [ToolboxSkillReference(name=n, version=skill_versions[n]) for n in C360_AGENT_SKILLS]
+    fp = _fingerprint({"tools": [t.as_dict() for t in tools],
+                       "skills": [s.as_dict() for s in skills]})
+    version = None
+    try:
+        latest = project_client.toolboxes.get(name).as_dict()["versions"]["latest"]
+        if (latest.get("metadata") or {}).get("v3_fingerprint") == fp:
+            version = latest["version"]
+            print(f"  toolbox {name}: unchanged (v{version})")
+    except Exception as e:
+        if not _is_not_found(e):
+            raise
+    if version is None:
+        tb = project_client.toolboxes.create_version(
+            name=name, tools=tools, skills=skills, metadata={"v3_fingerprint": fp},
+            description="Customer 360: Salesforce + ServiceNow MCP (OAuth2 OBO) + skills")
+        version = tb.version
+        print(f"  toolbox {name}: created v{version}")
+    endpoint = os.environ["AI_FOUNDRY_PROJECT_ENDPOINT"].rstrip("/")
+    return f"{endpoint}/toolboxes/{name}/versions/{version}/mcp?api-version=v1"
+
+
+def create_customer360_agent(project_client, skill_versions):
+    """customer360-assistant over SF + SN.
+
+    C360_TOOLS_MODE=direct (default): one MCP tool per system.
+    C360_TOOLS_MODE=toolbox: one MCP tool pointing at the version-pinned toolbox.
+    Returns the agent version, or None when the SN connection is missing.
+    """
+    from azure.ai.projects.models import MCPTool, PromptAgentDefinition
+
+    sf_url, sn_url = _sf_mcp_endpoint(), _sn_mcp_endpoint()
+    if not sf_url or not sn_url:
+        raise RuntimeError("No SF/SN MCP endpoint (APIM_GATEWAY_URL missing)")
+    sf_conn = os.environ.get("SF_OBO_CONNECTION_NAME", "salesforce-obo-oauth2")
+    sn_conn = os.environ.get("SN_OBO_CONNECTION_NAME", "servicenow-obo-oauth2")
+    try:
+        _require_oauth2_connection(sn_conn)
+    except RuntimeError as e:
+        print(f"WARNING: {e}\n  Skipping Customer 360 agent.")
+        return None
+
+    mode = os.environ.get("C360_TOOLS_MODE", "direct").lower()
+    if mode == "toolbox":
+        toolbox_url = ensure_customer360_toolbox(
+            project_client, skill_versions, sf_url, sf_conn, sn_url, sn_conn)
+        # No project_connection_id: Foundry authenticates the agent to its own project's
+        # toolbox (spike: no embedded token; OAuth consent still surfaces per system).
+        tools = [MCPTool(server_label="c360_toolbox", server_url=toolbox_url,
+                         require_approval="never")]
+        print(f"  tools: toolbox {toolbox_url}")
+    else:
+        tools = [
+            MCPTool(server_label="salesforce_mcp", server_url=sf_url,
+                    project_connection_id=sf_conn, require_approval="never",
+                    allowed_tools=SF_TOOLS),
+            MCPTool(server_label="servicenow_mcp", server_url=sn_url,
+                    project_connection_id=sn_conn, require_approval="never",
+                    allowed_tools=SN_TOOLS),
+        ]
+        print(f"  tools: direct SF ({sf_conn}) + SN ({sn_conn})")
+
+    definition = PromptAgentDefinition(
+        model=AGENT_MODEL, tools=tools,
+        **_skill_settings(CUSTOMER360_AGENT_INSTRUCTIONS, C360_AGENT_SKILLS, skill_versions),
+    )
+    # Foundry UI reads starters from definition.conversation_starters and metadata.starterPrompts.
+    definition["conversation_starters"] = [{"text": s} for s in C360_STARTERS]
+    version, _ = _ensure_agent_version(
+        project_client, "customer360-assistant", definition,
+        metadata={"starterPrompts": "\n".join(C360_STARTERS), "tools_mode": mode,
+                  "skills": ",".join(f"{n}@{skill_versions[n]}" for n in C360_AGENT_SKILLS)})
+    return version
+
+
+# ---------------------------------------------------------------------------
+# Agent Applications, deployments, staged publish (ARM control plane)
+# ---------------------------------------------------------------------------
 
 def _arm_rest(method, url, body=None, parse_json_response=True):
     """Call Azure ARM REST API via az rest. Returns parsed JSON or None."""
@@ -931,14 +1014,14 @@ def _arm_rest(method, url, body=None, parse_json_response=True):
 
 
 def _arm_project_base():
-    """Build the ARM control-plane base URL for the Foundry project.
-
-    Returns e.g. https://management.azure.com/subscriptions/.../accounts/.../projects/...
-    """
+    """ARM control-plane base URL for the Foundry project."""
     sub_id = run("az account show --query id -o tsv")
     rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
     account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
     project = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
+    if not (sub_id and rg and account and project):
+        raise RuntimeError("Missing subscription / AZURE_RESOURCE_GROUP / COGNITIVE_ACCOUNT_NAME "
+                           "/ AI_FOUNDRY_PROJECT_NAME")
     return (
         f"https://management.azure.com/subscriptions/{sub_id}"
         f"/resourceGroups/{rg}"
@@ -954,10 +1037,7 @@ def _poll_provisioning(get_url, timeout=300, interval=10):
         result = _arm_rest("GET", get_url)
         if result and isinstance(result, dict):
             state = result.get("properties", {}).get("provisioningState", "")
-            if state == "Succeeded":
-                return result
-            if state in ("Failed", "Canceled"):
-                print(f"  Provisioning failed: {state}")
+            if state in ("Succeeded", "Failed", "Canceled"):
                 return result
             print(f"  Provisioning state: {state} (waiting...)")
         time.sleep(interval)
@@ -966,693 +1046,449 @@ def _poll_provisioning(get_url, timeout=300, interval=10):
     return None
 
 
-def create_agent_application():
-    """Create/update the Agent Application via ARM control plane.
+# Per-agent publish settings. env_prefix keys the persisted azd env vars.
+PUBLISHED_AGENTS = [
+    {
+        "agent": "salesforce-assistant", "app": "salesforce-assistant",
+        "display": "Salesforce Assistant", "env_prefix": "SF",
+        "msa_env": "AGENT_BOT_MSA_APP_ID", "bot_env": "AGENT_BOT_NAME", "bot_prefix": "agent-bot",
+        "desc_short": "AI assistant with Salesforce access",
+        "desc_full": "AI-powered assistant that can query and update Salesforce on your "
+                     "behalf using natural language.",
+    },
+    {
+        "agent": "customer360-assistant", "app": "customer360-assistant",
+        "display": "Customer 360 Assistant", "env_prefix": "C360",
+        "msa_env": "C360_BOT_MSA_APP_ID", "bot_env": "C360_BOT_NAME", "bot_prefix": "c360-bot",
+        "desc_short": "Customer 360 across Salesforce and ServiceNow",
+        "desc_full": "AI assistant that correlates Salesforce CRM and ServiceNow ITSM data "
+                     "on your behalf: account view, revenue at risk, meeting prep and "
+                     "change risk.",
+    },
+]
 
-    Returns the Foundry-managed identity clientId (msaAppId for Bot Service).
-    Persists AGENT_BOT_MSA_APP_ID via azd env set.
+
+def _app_url(app_name):
+    return f"{_arm_project_base()}/applications/{app_name}?api-version={ARM_APPS_API}"
+
+
+def _deployments_url(app_name, deployment_name=None):
+    suffix = f"/{deployment_name}" if deployment_name else ""
+    return (f"{_arm_project_base()}/applications/{app_name}/agentDeployments{suffix}"
+            f"?api-version={ARM_APPS_API}")
+
+
+def ensure_agent_application(cfg):
+    """Create or reconcile the Agent Application; persist its identity for the Bot Service.
+
+    Returns the Foundry-managed identity clientId (Bot Service msaAppId).
     """
-    app_name = "salesforce-assistant"
-    agent_name = "salesforce-assistant"
-    api_version = "2026-01-15-preview"
-
-    base = _arm_project_base()
-    if not base or "None" in base:
-        print("  WARNING: Missing ARM project vars — skipping")
-        return None
-
-    url = f"{base}/applications/{app_name}?api-version={api_version}"
-
-    # Check if already exists
+    url = _app_url(cfg["app"])
     existing = _arm_rest("GET", url)
-    if existing and isinstance(existing, dict):
-        client_id = (
-            existing.get("properties", {})
-            .get("defaultInstanceIdentity", {})
-            .get("clientId")
-        )
-        if client_id:
-            print(f"  Agent Application already exists (clientId: {client_id})")
-            azd_env_set("AGENT_BOT_MSA_APP_ID", client_id)
-            return client_id
-
-    # Create/update
-    body = {
-        "properties": {
-            "displayName": "Salesforce Assistant",
-            "agents": [{"agentName": agent_name}],
-            "authorizationPolicy": {
-                "authorizationScheme": "Channels",
-            },
-        }
-    }
-
-    print(f"  Creating Agent Application '{app_name}'...")
-    result = _arm_rest("PUT", url, body)
-    if not result:
-        print("  ERROR: Failed to create Agent Application")
-        return None
-
-    # Check if already provisioned (PUT may return Succeeded immediately)
-    state = result.get("properties", {}).get("provisioningState", "")
-    if state != "Succeeded":
-        print("  Waiting for provisioning...")
-        result = _poll_provisioning(url)
-        if not result:
-            print("  ERROR: Agent Application provisioning timed out")
-            return None
-
-    client_id = (
-        result.get("properties", {})
-        .get("defaultInstanceIdentity", {})
-        .get("clientId")
-    )
-    if not client_id:
-        print("  ERROR: No clientId in Agent Application response")
-        print(f"  Response: {json.dumps(result, indent=2)[:500]}")
-        return None
-
-    print(f"  Agent Application created (clientId: {client_id})")
-    azd_env_set("AGENT_BOT_MSA_APP_ID", client_id)
-    return client_id
-
-
-def create_customer360_application():
-    """Create/update the Customer 360 Agent Application via ARM control plane.
-
-    No Bot Service or Teams app needed — chat-app discovers it automatically.
-    """
-    app_name = "customer360-assistant"
-    agent_name = "customer360-assistant"
-    api_version = "2026-01-15-preview"
-
-    base = _arm_project_base()
-    if not base or "None" in base:
-        print("  WARNING: Missing ARM project vars — skipping")
-        return None
-
-    url = f"{base}/applications/{app_name}?api-version={api_version}"
-
-    # Check if already exists
-    existing = _arm_rest("GET", url)
-    if existing and isinstance(existing, dict):
-        client_id = (
-            existing.get("properties", {})
-            .get("defaultInstanceIdentity", {})
-            .get("clientId")
-        )
-        if client_id:
-            print(f"  Agent Application already exists (clientId: {client_id})")
-            return client_id
-
-    # Create/update
-    body = {
-        "properties": {
-            "displayName": "Customer 360 Assistant",
-            "agents": [{"agentName": agent_name}],
-            "authorizationPolicy": {
-                "authorizationScheme": "Channels",
-            },
-        }
-    }
-
-    print(f"  Creating Agent Application '{app_name}'...")
-    result = _arm_rest("PUT", url, body)
-    if not result:
-        print("  ERROR: Failed to create Agent Application")
-        return None
-
-    # Check if already provisioned
-    state = result.get("properties", {}).get("provisioningState", "")
-    if state != "Succeeded":
-        print("  Waiting for provisioning...")
-        result = _poll_provisioning(url)
-        if not result:
-            print("  ERROR: Agent Application provisioning timed out")
-            return None
-
-    client_id = (
-        result.get("properties", {})
-        .get("defaultInstanceIdentity", {})
-        .get("clientId")
-    )
-    if not client_id:
-        print("  ERROR: No clientId in Agent Application response")
-        print(f"  Response: {json.dumps(result, indent=2)[:500]}")
-        return None
-
-    print(f"  Agent Application created (clientId: {client_id})")
-    return client_id
-
-
-def create_agent_deployment(agent_version):
-    """Create/update the Agent Deployment via ARM control plane.
-
-    Uses fixed deployment name 'salesforce-assistant' as a 'latest' pointer.
-    """
-    app_name = "salesforce-assistant"
-    deployment_name = "salesforce-assistant"
-    agent_name = "salesforce-assistant"
-    api_version = "2026-01-15-preview"
-
-    base = _arm_project_base()
-    if not base or "None" in base:
-        print("  WARNING: Missing ARM project vars — skipping")
-        return
-
-    url = f"{base}/applications/{app_name}/agentDeployments/{deployment_name}?api-version={api_version}"
-
-    body = {
-        "properties": {
-            "displayName": "Salesforce Assistant",
-            "deploymentType": "Managed",
-            "protocols": [
-                {"protocol": "Responses", "version": "1.0"},
-            ],
-            "agents": [
-                {
-                    "agentName": agent_name,
-                    "agentVersion": str(agent_version),
-                },
-            ],
-        }
-    }
-
-    print(f"  Creating/updating Agent Deployment '{deployment_name}' (agent v{agent_version})...")
-    result = _arm_rest("PUT", url, body)
-    if not result:
-        print("  ERROR: Failed to create Agent Deployment")
-        return None
-
-    # Check if already provisioned
-    state = result.get("properties", {}).get("provisioningState", "")
-    if state != "Succeeded":
-        result = _poll_provisioning(url)
-        if result:
-            state = result.get("properties", {}).get("provisioningState", "")
-
-    deployment_id = result.get("properties", {}).get("deploymentId", "") if result else ""
-    print(f"  Agent Deployment: {state or 'unknown'} (deploymentId: {deployment_id})")
-
-    # Update Application traffic routing to point to this deployment.
-    # Without this, the Activity Protocol (Teams/Copilot) routes to a stale
-    # deployment ID and returns "Sorry, I wasn't able to respond".
-    if deployment_id:
-        _update_traffic_routing(app_name, deployment_id, api_version)
-
-    return deployment_id
-
-
-def _update_traffic_routing(app_name, deployment_id, api_version):
-    """Update Agent Application trafficRoutingPolicy to route to the given deployment."""
-    base = _arm_project_base()
-    url = f"{base}/applications/{app_name}?api-version={api_version}"
-
-    body = {
-        "properties": {
-            "trafficRoutingPolicy": {
-                "protocol": "FixedRatio",
-                "rules": [
-                    {
-                        "ruleId": "default",
-                        "deploymentId": deployment_id,
-                        "trafficPercentage": 100,
-                    }
-                ],
-            },
-        }
-    }
-
-    print(f"  Updating traffic routing -> deploymentId={deployment_id}...")
-    result = _arm_rest("PUT", url, body)
-    if result:
-        routed = (
-            result.get("properties", {})
-            .get("trafficRoutingPolicy", {})
-            .get("rules", [{}])[0]
-            .get("deploymentId", "")
-        )
-        print(f"  Traffic routing updated (routed to: {routed})")
+    props = (existing or {}).get("properties", {}) if isinstance(existing, dict) else {}
+    client_id = props.get("defaultInstanceIdentity", {}).get("clientId")
+    agents = [a.get("agentName") for a in props.get("agents", [])]
+    if client_id and agents == [cfg["agent"]]:
+        print(f"  Application '{cfg['app']}' exists (clientId {client_id})")
     else:
-        print("  WARNING: Failed to update traffic routing")
+        body = {"properties": {
+            "displayName": cfg["display"],
+            "agents": [{"agentName": cfg["agent"]}],
+            "authorizationPolicy": {"authorizationScheme": "Channels"},
+        }}
+        rules = [{k: r[k] for k in ("ruleId", "deploymentId", "trafficPercentage") if k in r}
+                 for r in (props.get("trafficRoutingPolicy") or {}).get("rules") or []
+                 if r.get("deploymentId")]
+        if rules:
+            body["properties"]["trafficRoutingPolicy"] = {"protocol": "FixedRatio", "rules": rules}
+        verb = "Reconciling" if existing else "Creating"
+        print(f"  {verb} Application '{cfg['app']}' (agents {agents} -> [{cfg['agent']}])...")
+        result = _arm_rest("PUT", url, body)
+        if not result:
+            raise RuntimeError(f"Failed to create Agent Application '{cfg['app']}'")
+        if result.get("properties", {}).get("provisioningState") != "Succeeded":
+            result = _poll_provisioning(url)
+        props = (result or {}).get("properties", {})
+        if props.get("provisioningState") != "Succeeded":
+            raise RuntimeError(f"Agent Application '{cfg['app']}' did not provision")
+        client_id = props.get("defaultInstanceIdentity", {}).get("clientId")
+        if not client_id:
+            raise RuntimeError(f"No clientId on Agent Application '{cfg['app']}'")
+    azd_env_set(cfg["msa_env"], client_id)
+    return client_id
 
 
-def create_customer360_deployment(agent_version):
-    """Create/update the Customer 360 Agent Deployment via ARM control plane.
+def _routed_deployment(cfg):
+    """(deploymentId, agentVersion) currently receiving traffic, or (None, None)."""
+    app = _arm_rest("GET", _app_url(cfg["app"])) or {}
+    rules = app.get("properties", {}).get("trafficRoutingPolicy", {}).get("rules") or []
+    dep_id = rules[0].get("deploymentId") if rules else None
+    if not dep_id:
+        return None, None
+    deployments = (_arm_rest("GET", _deployments_url(cfg["app"])) or {}).get("value", [])
+    for d in deployments:
+        if d.get("properties", {}).get("deploymentId") == dep_id:
+            agents = d["properties"].get("agents") or [{}]
+            return dep_id, str(agents[0].get("agentVersion"))
+    return dep_id, None
 
-    Uses fixed deployment name 'customer360-assistant' as a 'latest' pointer.
-    """
-    app_name = "customer360-assistant"
-    deployment_name = "customer360-assistant"
-    agent_name = "customer360-assistant"
-    api_version = "2026-01-15-preview"
 
-    base = _arm_project_base()
-    if not base or "None" in base:
-        print("  WARNING: Missing ARM project vars — skipping")
-        return
-
-    url = f"{base}/applications/{app_name}/agentDeployments/{deployment_name}?api-version={api_version}"
-
-    body = {
-        "properties": {
-            "displayName": "Customer 360 Assistant",
-            "deploymentType": "Managed",
-            "protocols": [
-                {"protocol": "Responses", "version": "1.0"},
-            ],
-            "agents": [
-                {
-                    "agentName": agent_name,
-                    "agentVersion": str(agent_version),
-                },
-            ],
-        }
-    }
-
-    print(f"  Creating/updating Agent Deployment '{deployment_name}' (agent v{agent_version})...")
+def _ensure_versioned_deployment(cfg, agent_version):
+    """Immutable deployment '<agent>-v<version>' (never repoint the live one in place)."""
+    name = f"{cfg['agent']}-v{agent_version}"
+    url = _deployments_url(cfg["app"], name)
+    existing = _arm_rest("GET", url)
+    props = existing.get("properties", {}) if isinstance(existing, dict) else {}
+    if props.get("provisioningState") == "Succeeded" and props.get("deploymentId"):
+        print(f"  Deployment '{name}' exists ({props['deploymentId']})")
+        return props["deploymentId"]
+    body = {"properties": {
+        "displayName": f"{cfg['display']} v{agent_version}",
+        "deploymentType": "Managed",
+        "protocols": [{"protocol": "Responses", "version": "1.0"}],
+        "agents": [{"agentName": cfg["agent"], "agentVersion": str(agent_version)}],
+    }}
+    print(f"  Creating deployment '{name}'...")
     result = _arm_rest("PUT", url, body)
-    if not result:
-        print("  ERROR: Failed to create Agent Deployment")
-        return None
-
-    # Check if already provisioned
-    state = result.get("properties", {}).get("provisioningState", "")
-    if state != "Succeeded":
+    if result and result.get("properties", {}).get("provisioningState") != "Succeeded":
         result = _poll_provisioning(url)
-        if result:
-            state = result.get("properties", {}).get("provisioningState", "")
-
-    deployment_id = result.get("properties", {}).get("deploymentId", "") if result else ""
-    print(f"  Agent Deployment: {state or 'unknown'} (deploymentId: {deployment_id})")
-
-    if deployment_id:
-        _update_traffic_routing(app_name, deployment_id, api_version)
-
-    return deployment_id
+    props = (result or {}).get("properties", {})
+    if props.get("provisioningState") != "Succeeded" or not props.get("deploymentId"):
+        raise RuntimeError(f"Deployment '{name}' failed: {props.get('provisioningState')}")
+    return props["deploymentId"]
 
 
-def create_bot_service_and_channels(msa_app_id):
-    """Create Bot Service + channels via ARM REST (first-run bootstrap only).
+def _route_to(cfg, deployment_id):
+    """Route 100% of the application's traffic to deployment_id and assert it."""
+    app = _arm_rest("GET", _app_url(cfg["app"])) or {}
+    props = app.get("properties", {})
+    # Send only the scheme: echoing server-populated fields (isolationKeySource) is rejected.
+    scheme = (props.get("authorizationPolicy") or {}).get("authorizationScheme", "Channels")
+    body = {"properties": {
+        "displayName": props.get("displayName", cfg["display"]),
+        "agents": [{"agentName": cfg["agent"]}],
+        "authorizationPolicy": {"authorizationScheme": scheme},
+        "trafficRoutingPolicy": {"protocol": "FixedRatio", "rules": [
+            {"ruleId": "default", "deploymentId": deployment_id, "trafficPercentage": 100}]},
+    }}
+    print(f"  Routing '{cfg['app']}' -> {deployment_id}...")
+    routed = None
+    for attempt in range(3):
+        body_file = _write_temp_json(body)
+        try:
+            put = subprocess.run(
+                f'az rest --method PUT --url "{_app_url(cfg["app"])}" '
+                f'--headers "Content-Type=application/json" --body "@{body_file}"',
+                capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace",
+                env={**os.environ, "MSYS_NO_PATHCONV": "1"})
+        finally:
+            os.unlink(body_file)
+        if put.returncode != 0:
+            print(f"  Routing PUT attempt {attempt + 1} failed: {put.stderr.strip()[:300]}")
+        for _ in range(9):  # the PUT is applied asynchronously
+            routed, _version = _routed_deployment(cfg)
+            if routed == deployment_id:
+                break
+            time.sleep(10)
+        if routed == deployment_id:
+            break
+    if routed != deployment_id:
+        raise RuntimeError(f"Routing assert failed for '{cfg['app']}': routed={routed}")
+    print(f"  Routed (asserted): {routed}")
 
-    On subsequent deploys, Bicep manages the Bot Service. This function
-    skips if the Bot Service already exists.
+
+def smoke_test_agent_version(project_client, agent_name, agent_version):
+    """Pre-route check of the exact version. Consent requests count as healthy plumbing."""
+    client = project_client.get_openai_client()
+    resp = client.responses.create(
+        input="Health check: reply with the single word OK. Do not call any tool.",
+        extra_body={"agent_reference": {"name": agent_name, "version": str(agent_version),
+                                        "type": "agent_reference"}},
+    )
+    types = [getattr(i, "type", "") for i in resp.output or []]
+    if getattr(resp, "status", "completed") not in ("completed", None) and \
+            "oauth_consent_request" not in types:
+        raise RuntimeError(f"Smoke test of {agent_name} v{agent_version}: status {resp.status}")
+    print(f"  Smoke test {agent_name} v{agent_version}: ok (items {sorted(set(types))})")
+
+
+def staged_publish(project_client, cfg, agent_version):
+    """Record current route, deploy exact version, smoke test it, route 100%, assert."""
+    prefix = cfg["env_prefix"]
+    prev_id, prev_version = _routed_deployment(cfg)
+    print(f"  Current route: {prev_id or 'none'} (agent v{prev_version or '?'})")
+    dep_id = _ensure_versioned_deployment(cfg, agent_version)
+    if prev_id == dep_id:
+        print(f"  {cfg['agent']} v{agent_version} already receives 100% of traffic")
+        return dep_id
+    if prev_id:
+        azd_env_set(f"{prefix}_PREV_DEPLOYMENT_ID", prev_id)
+        azd_env_set(f"{prefix}_PREV_AGENT_VERSION", prev_version or "")
+    try:
+        smoke_test_agent_version(project_client, cfg["agent"], agent_version)
+    except Exception:
+        # The new version is already 'latest' (web chat); put the routed one back.
+        if prev_version:
+            _restore_as_latest(project_client, cfg["agent"], prev_version)
+        raise
+    _route_to(cfg, dep_id)
+    azd_env_set(f"{prefix}_AGENT_VERSION", str(agent_version))
+    azd_env_set(f"{prefix}_DEPLOYMENT_ID", dep_id)
+    return dep_id
+
+
+def rollback():
+    """Restore each agent to the version recorded before the last publish.
+
+    Routes the application (Teams) back to the previous deployment and republishes
+    the previous definition as the newest version, because the web chat calls
+    agent_reference without a version and always gets the latest one.
+    """
+    project_client = _project_client()
+    failures = []
+    for cfg in PUBLISHED_AGENTS:
+        prefix = cfg["env_prefix"]
+        prev = os.environ.get(f"{prefix}_PREV_DEPLOYMENT_ID", "")
+        prev_version = os.environ.get(f"{prefix}_PREV_AGENT_VERSION", "")
+        if not prev:
+            print(f"  {cfg['app']}: no previous deployment recorded — skipped")
+            continue
+        try:
+            _route_to(cfg, prev)
+            azd_env_set(f"{prefix}_DEPLOYMENT_ID", prev)
+            azd_env_set(f"{prefix}_AGENT_VERSION", prev_version)
+            if prev_version:
+                _restore_as_latest(project_client, cfg["agent"], prev_version)
+        except Exception as e:
+            failures.append(f"{cfg['app']}: {e}")
+    if failures:
+        raise RuntimeError("Rollback failed: " + "; ".join(failures))
+
+
+# ---------------------------------------------------------------------------
+# Bot Service + Teams (per published agent)
+# ---------------------------------------------------------------------------
+
+def _activity_endpoint(app_name):
+    account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
+    project = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
+    return (f"https://{account}.services.ai.azure.com/api/projects/{project}"
+            f"/applications/{app_name}/protocols/activityprotocol"
+            f"?api-version=2025-11-15-preview")
+
+
+def create_bot_service_and_channels(cfg, msa_app_id):
+    """Bootstrap the agent's Bot Service + channels (first run; Bicep manages it after).
+
+    Adopts an existing bot that already uses msa_app_id (e.g. portal-created).
     """
     sub_id = run("az account show --query id -o tsv")
     rg = os.environ.get("AZURE_RESOURCE_GROUP", "")
-    env_name = os.environ.get("AZURE_ENV_NAME", "")
-    base_name = env_name.lower()
-    bot_name = f"agent-bot-{base_name}"
+    env_name = os.environ.get("AZURE_ENV_NAME", "").lower()
+    bot_name = os.environ.get(cfg["bot_env"]) or f"{cfg['bot_prefix']}-{env_name}"
+    bots_base = (f"https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{rg}"
+                 f"/providers/Microsoft.BotService/botServices")
+    api = "api-version=2023-09-15-preview"
 
-    if not sub_id or not rg:
-        print("  WARNING: Missing subscription ID or resource group — skipping")
-        return
-
-    bot_url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.BotService/botServices/{bot_name}"
-        f"?api-version=2023-09-15-preview"
-    )
-
-    # Check if our bot already exists by name
-    existing = _arm_rest("GET", bot_url)
+    existing = _arm_rest("GET", f"{bots_base}/{bot_name}?{api}")
     if existing and isinstance(existing, dict) and existing.get("id"):
-        print(f"  Bot Service '{bot_name}' already exists — Bicep will manage it")
+        print(f"  Bot Service '{bot_name}' exists — Bicep manages it")
+        azd_env_set(cfg["bot_env"], bot_name)
         return
-
-    # Check if any bot in the RG already uses this msaAppId (e.g. portal-created)
-    list_url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.BotService/botServices"
-        f"?api-version=2023-09-15-preview"
-    )
-    bots = _arm_rest("GET", list_url)
-    if bots and isinstance(bots, dict):
-        for bot in bots.get("value", []):
-            if bot.get("properties", {}).get("msaAppId") == msa_app_id:
-                existing_name = bot.get("name", "unknown")
-                print(f"  Bot Service '{existing_name}' already uses msaAppId — adopting it")
-                azd_env_set("AGENT_BOT_NAME", existing_name)
-                return
-
-    # Build endpoint URL — Foundry activity protocol
-    account = os.environ.get("COGNITIVE_ACCOUNT_NAME", "")
-    project = os.environ.get("AI_FOUNDRY_PROJECT_NAME", "")
-    app_name = "salesforce-assistant"
-    if not account or not project:
-        print("  WARNING: COGNITIVE_ACCOUNT_NAME or AI_FOUNDRY_PROJECT_NAME not set")
-        return
-    endpoint = (
-        f"https://{account}.services.ai.azure.com/api/projects/{project}"
-        f"/applications/{app_name}/protocols/activityprotocol"
-        f"?api-version=2025-11-15-preview"
-    )
+    bots = _arm_rest("GET", f"{bots_base}?{api}") or {}
+    for bot in bots.get("value", []):
+        if bot.get("properties", {}).get("msaAppId") == msa_app_id:
+            print(f"  Bot Service '{bot['name']}' already uses this msaAppId — adopting it")
+            azd_env_set(cfg["bot_env"], bot["name"])
+            return
 
     tenant_id = run("az account show --query tenantId -o tsv")
-
-    # Create Bot Service
-    bot_body = {
-        "location": "global",
-        "kind": "azurebot",
-        "sku": {"name": "S1"},
-        "properties": {
-            "displayName": "Salesforce Assistant",
-            "description": "Bot service for AI agent",
-            "endpoint": endpoint,
-            "msaAppId": msa_app_id,
-            "msaAppTenantId": tenant_id,
-            "msaAppType": "SingleTenant",
-        },
-    }
-
     print(f"  Creating Bot Service '{bot_name}'...")
-    result = _arm_rest("PUT", bot_url, bot_body)
+    result = _arm_rest("PUT", f"{bots_base}/{bot_name}?{api}", {
+        "location": "global", "kind": "azurebot", "sku": {"name": "S1"},
+        "properties": {
+            "displayName": cfg["display"], "description": "Bot service for AI agent",
+            "endpoint": _activity_endpoint(cfg["app"]), "msaAppId": msa_app_id,
+            "msaAppTenantId": tenant_id, "msaAppType": "SingleTenant",
+        },
+    })
     if not result:
-        print("  ERROR: Failed to create Bot Service")
-        return
-    print("  Bot Service created")
-    azd_env_set("AGENT_BOT_NAME", bot_name)
-
-    # Create Teams Channel
-    teams_url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.BotService/botServices/{bot_name}"
-        f"/channels/MsTeamsChannel"
-        f"?api-version=2023-09-15-preview"
-    )
-    teams_body = {
-        "location": "global",
-        "properties": {
-            "channelName": "MsTeamsChannel",
-            "properties": {
-                "isEnabled": True,
-                "deploymentEnvironment": "CommercialDeployment",
-            },
-        },
+        raise RuntimeError(f"Failed to create Bot Service '{bot_name}'")
+    azd_env_set(cfg["bot_env"], bot_name)
+    channels = {
+        "MsTeamsChannel": {"isEnabled": True, "deploymentEnvironment": "CommercialDeployment"},
+        "DirectLineChannel": {"sites": [{"siteName": "Default Site", "isEnabled": True,
+                                         "isV1Enabled": True, "isV3Enabled": True}]},
     }
-    print("  Creating Teams Channel...")
-    result = _arm_rest("PUT", teams_url, teams_body)
-    if result:
-        print("  Teams Channel created")
-    else:
-        print("  WARNING: Failed to create Teams Channel")
-
-    # Create DirectLine Channel
-    dl_url = (
-        f"https://management.azure.com/subscriptions/{sub_id}"
-        f"/resourceGroups/{rg}"
-        f"/providers/Microsoft.BotService/botServices/{bot_name}"
-        f"/channels/DirectLineChannel"
-        f"?api-version=2023-09-15-preview"
-    )
-    dl_body = {
-        "location": "global",
-        "properties": {
-            "channelName": "DirectLineChannel",
-            "properties": {
-                "isEnabled": True,
-                "sites": [
-                    {
-                        "siteName": "Default Site",
-                        "isEnabled": True,
-                        "isV1Enabled": True,
-                        "isV3Enabled": True,
-                    }
-                ],
-            },
-        },
-    }
-    print("  Creating DirectLine Channel...")
-    result = _arm_rest("PUT", dl_url, dl_body)
-    if result:
-        print("  DirectLine Channel created")
-    else:
-        print("  WARNING: Failed to create DirectLine Channel")
+    for channel, props in channels.items():
+        ok = _arm_rest("PUT", f"{bots_base}/{bot_name}/channels/{channel}?{api}", {
+            "location": "global", "properties": {"channelName": channel, "properties": props}})
+        print(f"  {channel}: {'created' if ok else 'FAILED'}")
 
 
-def publish_teams_app_org_wide(msa_app_id):
-    """Generate Teams app manifest and publish to org catalog via Graph API.
+def _next_manifest_version(existing_app):
+    """Patch-bump the highest appDefinition version in the catalog (Teams rejects reuse)."""
+    def parse(v):
+        try:
+            return tuple(int(x) for x in v.split("."))
+        except (AttributeError, ValueError):
+            return (0, 0, 0)
+    versions = [parse(d.get("version")) for d in (existing_app or {}).get("appDefinitions", [])]
+    if not versions:
+        return "1.0.0"
+    major, minor, patch = (list(max(versions)) + [0, 0, 0])[:3]
+    return f"{major}.{minor}.{patch + 1}"
 
-    - Generates manifest.json with bot capability
-    - Packages as ZIP with icons
-    - POST /appCatalogs/teamsApps (or PUT to update existing)
-    - requiresReview=false for instant availability
-    """
+
+def publish_teams_app_org_wide(cfg, msa_app_id):
+    """Publish/update the agent's Teams app in the org catalog via Graph (non-fatal)."""
     import zipfile
 
     env_name = os.environ.get("AZURE_ENV_NAME", "default")
     developer_name = os.environ.get("TEAMS_APP_DEVELOPER_NAME", "")
     privacy_url = os.environ.get("TEAMS_APP_PRIVACY_URL", "")
     terms_url = os.environ.get("TEAMS_APP_TERMS_URL", "")
-
     if not developer_name or not privacy_url or not terms_url:
-        print("  Skipping Teams org catalog publish — missing required env vars:")
-        if not developer_name:
-            print("    azd env set TEAMS_APP_DEVELOPER_NAME <company-name>")
-        if not privacy_url:
-            print("    azd env set TEAMS_APP_PRIVACY_URL <url>")
-        if not terms_url:
-            print("    azd env set TEAMS_APP_TERMS_URL <url>")
+        print("  Skipping Teams publish — set TEAMS_APP_DEVELOPER_NAME, "
+              "TEAMS_APP_PRIVACY_URL and TEAMS_APP_TERMS_URL")
         return
 
-    # Deterministic app ID based on environment name
-    app_external_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"salesforce-assistant-{env_name}"))
+    app_external_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{cfg['app']}-{env_name}"))
+    lookup = run(
+        f'az rest --method GET --url "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps'
+        f'?%24filter=externalId eq \'{app_external_id}\'&%24expand=appDefinitions"',
+        parse_json=True,
+    )
+    if lookup is None:
+        print("  WARNING: cannot read the Teams org catalog (needs AppCatalog.ReadWrite.All "
+              "on the deployer token) — skipped")
+        return
+    apps = lookup.get("value", []) if isinstance(lookup, dict) else []
+    existing = apps[0] if apps else None
+    version = _next_manifest_version(existing)
 
     manifest = {
         "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
         "manifestVersion": "1.19",
-        "version": "1.0.0",
+        "version": version,
         "id": app_external_id,
-        "developer": {
-            "name": developer_name,
-            "websiteUrl": privacy_url,
-            "privacyUrl": privacy_url,
-            "termsOfUseUrl": terms_url,
-        },
-        "name": {
-            "short": "Salesforce Assistant",
-            "full": f"Salesforce Assistant ({env_name})",
-        },
-        "description": {
-            "short": "AI assistant with Salesforce access",
-            "full": "AI-powered assistant that can query and update Salesforce on your behalf using natural language.",
-        },
-        "icons": {
-            "color": "color.png",
-            "outline": "outline.png",
-        },
+        "developer": {"name": developer_name, "websiteUrl": privacy_url,
+                      "privacyUrl": privacy_url, "termsOfUseUrl": terms_url},
+        "name": {"short": cfg["display"], "full": f"{cfg['display']} ({env_name})"},
+        "description": {"short": cfg["desc_short"], "full": cfg["desc_full"]},
+        "icons": {"color": "color.png", "outline": "outline.png"},
         "accentColor": "#0078D4",
-        "bots": [
-            {
-                "botId": msa_app_id,
-                "scopes": ["personal", "team", "groupChat"],
-                "supportsFiles": False,
-                "isNotificationOnly": False,
-                "commandLists": [],
-            }
-        ],
+        "bots": [{"botId": msa_app_id, "scopes": ["personal", "team", "groupChat"],
+                  "supportsFiles": False, "isNotificationOnly": False, "commandLists": []}],
         "permissions": ["identity", "messageTeamMembers"],
         "validDomains": [],
     }
-
-    # Build ZIP package
-    assets_dir = os.path.join(os.getcwd(), "assets", "teams")
-    zip_path = os.path.join(tempfile.gettempdir(), "teams-app.zip")
-
+    assets_dir = os.path.join(REPO_ROOT, "assets", "teams")
+    zip_path = os.path.join(tempfile.gettempdir(), f"teams-app-{cfg['app']}.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-        color_path = os.path.join(assets_dir, "color.png")
-        outline_path = os.path.join(assets_dir, "outline.png")
-        if os.path.exists(color_path):
-            zf.write(color_path, "color.png")
-        if os.path.exists(outline_path):
-            zf.write(outline_path, "outline.png")
+        for icon in ("color.png", "outline.png"):
+            if os.path.exists(os.path.join(assets_dir, icon)):
+                zf.write(os.path.join(assets_dir, icon), icon)
 
-    print(f"  Teams app package created: {zip_path}")
-
-    # Check if app already in org catalog
-    filter_query = f"externalId eq '{app_external_id}'"
-    check_result = run(
-        f'az rest --method GET '
-        f'--url "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps'
-        f'?$filter={filter_query}" '
-        f'--headers "Content-Type=application/json"',
-        parse_json=True,
-    )
-
-    existing_app_id = None
-    if check_result and isinstance(check_result, dict):
-        apps = check_result.get("value", [])
-        if apps:
-            existing_app_id = apps[0].get("id")
-
-    if existing_app_id:
-        # Update existing app
-        print(f"  Updating existing Teams app (id: {existing_app_id})...")
-        result = run(
-            f'az rest --method PUT '
-            f'--url "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/{existing_app_id}/appDefinitions" '
-            f'--headers "Content-Type=application/zip" '
-            f'--body "@{zip_path}"',
-            parse_json=True,
-        )
-        if result:
-            print("  Teams app updated in org catalog")
-        else:
-            print("  WARNING: Failed to update Teams app (may need AppCatalog.ReadWrite.All permission)")
-    else:
-        # Create new app in org catalog
-        print("  Publishing Teams app to org catalog...")
-        result = run(
-            f'az rest --method POST '
-            f'--url "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps?requiresReview=false" '
-            f'--headers "Content-Type=application/zip" '
-            f'--body "@{zip_path}"',
-            parse_json=True,
-        )
-        if result:
-            new_id = result.get("id", "unknown")
-            print(f"  Teams app published to org catalog (id: {new_id})")
-        else:
-            print("  WARNING: Failed to publish Teams app (may need AppCatalog.ReadWrite.All permission)")
-
-    # Clean up
     try:
-        os.unlink(zip_path)
-    except OSError:
-        pass
+        if existing:
+            print(f"  Updating Teams app {existing['id']} -> v{version}...")
+            url = (f"https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/"
+                   f"{existing['id']}/appDefinitions")
+        else:
+            print(f"  Publishing Teams app v{version} to the org catalog...")
+            url = "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps?requiresReview=false"
+        result = run(f'az rest --method POST --url "{url}" '
+                     f'--headers "Content-Type=application/zip" --body "@{zip_path}"',
+                     parse_json=True)
+        if result is None:
+            print("  WARNING: Teams publish failed (needs AppCatalog.ReadWrite.All)")
+        else:
+            print(f"  Teams app '{cfg['display']}' v{version} published")
+    finally:
+        try:
+            os.unlink(zip_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+def _non_fatal(step, fn, *args):
+    try:
+        return fn(*args)
+    except Exception as e:
+        print(f"\nWARNING: {step} failed (non-fatal): {e}")
+        traceback.print_exc()
+        return None
 
 
 def main():
-    print("=== Post-provision hook (OBO) ===\n")
+    import argparse
+    parser = argparse.ArgumentParser(description="azd postprovision hook (v3)")
+    parser.add_argument("--rollback", action="store_true",
+                        help="route each agent back to the deployment recorded before "
+                             "the last publish, then exit")
+    args = parser.parse_args()
 
-    # Step 0: Upload cert to Key Vault + configure APIM cert binding
+    if args.rollback:
+        print("=== Rollback: restore previous agent deployments ===")
+        rollback()
+        print("=== Rollback complete ===")
+        return
+
+    print("=== Post-provision hook (OBO, v3) ===\n")
+
     print("--- Step 0: Certificate upload + APIM binding ---")
-    try:
-        upload_cert_and_configure_apim()
-    except Exception as e:
-        print(f"\nWARNING: Certificate upload failed (non-fatal): {e}")
-        traceback.print_exc()
+    _non_fatal("Certificate upload", upload_cert_and_configure_apim)
 
-    # Step 1: Create Chat App Entra registration
     print("\n--- Step 1: Chat App Entra registration ---")
-    try:
-        create_chat_app_entra_registration()
-    except Exception as e:
-        print(f"\nWARNING: Chat App Entra registration failed (non-fatal): {e}")
-        traceback.print_exc()
+    _non_fatal("Chat App Entra registration", create_chat_app_entra_registration)
 
-    # Step 2: Ensure OBO connection exists (OAuth2) — BEFORE agent creation,
-    # since agents reference the connection by name.
+    # Agents reference the connection by name, so it must exist first.
     print("\n--- Step 2: Salesforce OBO connection ---")
-    try:
-        ensure_obo_connection()
-    except Exception as e:
-        print(f"\nWARNING: SF OBO connection check failed (non-fatal): {e}")
-        traceback.print_exc()
+    _non_fatal("SF OBO connection", ensure_obo_connection)
 
-    # Step 2b: Create Foundry agent
-    print("\n--- Step 2b: Create Foundry agent ---")
-    agent_version = None
-    try:
-        agent_version = create_agent()
-    except Exception as e:
-        print(f"\nWARNING: Agent creation failed (non-fatal): {e}")
-        print("Re-run with: python hooks/postprovision.py")
-        traceback.print_exc()
+    print("\n--- Step 3: Chat App settings ---")
+    _non_fatal("Chat App settings update", update_chat_app_settings)
 
-    # Step 3: Update Chat App env vars
-    print("\n--- Step 3: Update Chat App settings ---")
-    try:
-        update_chat_app_settings()
-    except Exception as e:
-        print(f"\nWARNING: Chat App settings update failed (non-fatal): {e}")
-        traceback.print_exc()
+    print("\n--- Step 4: OBO APIM Named Values ---")
+    _non_fatal("OBO APIM Named Values update", update_obo_apim_named_values)
 
-    print("\n--- Step 4b: OBO APIM Named Values ---")
-    try:
-        update_obo_apim_named_values()
-    except Exception as e:
-        print(f"\nWARNING: OBO APIM Named Values update failed (non-fatal): {e}")
-        traceback.print_exc()
+    # From here on, failures are fatal: a half-published agent is worse than a failed hook.
+    project_client = _project_client()
 
-    # Step 5: Agent Application (REST-only, can't be Bicep)
-    print("\n--- Step 5: Agent Application ---")
-    msa_app_id = None
-    try:
-        msa_app_id = create_agent_application()
-    except Exception as e:
-        print(f"\nWARNING: Agent Application creation failed (non-fatal): {e}")
-        traceback.print_exc()
+    print("\n--- Step 5: Skills ---")
+    skill_versions = _with_propagation_retry(lambda: ensure_skills(project_client), "skills")
 
-    # Step 6: Agent Deployment (REST-only, needs agent version)
-    if agent_version:
-        print("\n--- Step 6: Agent Deployment ---")
-        try:
-            create_agent_deployment(agent_version)
-        except Exception as e:
-            print(f"\nWARNING: Agent Deployment failed (non-fatal): {e}")
-            traceback.print_exc()
-    else:
-        print("\n--- Step 6: Agent Deployment (skipped — no agent version) ---")
+    print("\n--- Step 6: Agents ---")
+    versions = {"salesforce-assistant": create_agent(project_client, skill_versions),
+                "customer360-assistant": create_customer360_agent(project_client, skill_versions)}
 
-    # Step 6b: Create Customer 360 agent (dual MCP — SF + SN)
-    print("\n--- Step 6b: Create Customer 360 agent ---")
-    c360_version = None
-    try:
-        c360_version = create_customer360_agent()
-    except Exception as e:
-        print(f"\nWARNING: Customer 360 agent creation failed (non-fatal): {e}")
-        traceback.print_exc()
+    msa_ids = {}
+    for cfg in PUBLISHED_AGENTS:
+        version = versions.get(cfg["agent"])
+        if not version:
+            print(f"\n--- Step 7: {cfg['display']} publish (skipped — no agent version) ---")
+            continue
+        print(f"\n--- Step 7: {cfg['display']} — application + staged publish (v{version}) ---")
+        msa_ids[cfg["agent"]] = ensure_agent_application(cfg)
+        staged_publish(project_client, cfg, version)
 
-    # Step 6c: Customer 360 Agent Application
-    if c360_version:
-        print("\n--- Step 6c: Customer 360 Agent Application ---")
-        try:
-            create_customer360_application()
-        except Exception as e:
-            print(f"\nWARNING: Customer 360 Agent Application failed (non-fatal): {e}")
-            traceback.print_exc()
-    else:
-        print("\n--- Step 6c: Customer 360 Agent Application (skipped — no agent version) ---")
-
-    # Step 6d: Customer 360 Agent Deployment
-    if c360_version:
-        print("\n--- Step 6d: Customer 360 Agent Deployment ---")
-        try:
-            create_customer360_deployment(c360_version)
-        except Exception as e:
-            print(f"\nWARNING: Customer 360 Agent Deployment failed (non-fatal): {e}")
-            traceback.print_exc()
-    else:
-        print("\n--- Step 6d: Customer 360 Agent Deployment (skipped — no agent version) ---")
-
-    # Step 7: Bot Service bootstrap (first-run only, then Bicep takes over)
-    if msa_app_id:
-        print("\n--- Step 7: Bot Service bootstrap ---")
-        try:
-            create_bot_service_and_channels(msa_app_id)
-        except Exception as e:
-            print(f"\nWARNING: Bot Service bootstrap failed (non-fatal): {e}")
-            traceback.print_exc()
-    else:
-        print("\n--- Step 7: Bot Service bootstrap (skipped — no msaAppId) ---")
-
-    # Step 8: Teams org-wide distribution (Graph API)
-    if msa_app_id:
-        print("\n--- Step 8: Teams org catalog publish ---")
-        try:
-            publish_teams_app_org_wide(msa_app_id)
-        except Exception as e:
-            print(f"\nWARNING: Teams publish failed (non-fatal): {e}")
-            traceback.print_exc()
-    else:
-        print("\n--- Step 8: Teams org catalog publish (skipped — no msaAppId) ---")
+    for cfg in PUBLISHED_AGENTS:
+        msa = msa_ids.get(cfg["agent"])
+        if not msa:
+            continue
+        print(f"\n--- Step 8: {cfg['display']} — Bot Service ---")
+        create_bot_service_and_channels(cfg, msa)
+        print(f"\n--- Step 9: {cfg['display']} — Teams org catalog ---")
+        _non_fatal("Teams publish", publish_teams_app_org_wide, cfg, msa)
 
     print("\n=== Post-provision hook complete ===")
+    print("Rollback: python hooks/postprovision.py --rollback")
 
 
 if __name__ == "__main__":

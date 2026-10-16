@@ -7,16 +7,21 @@ using Azure AI Foundry's native publishing feature.
 
 There are two ways to reach Teams. Neither needs custom bot code in the data path:
 
-- **Automated (`azd up`):** postprovision Steps 5–8 publish `salesforce-assistant`
-  as a Foundry Agent Application. They bootstrap an Azure Bot Service whose
-  messaging endpoint is Foundry's activity-protocol endpoint, then upload a Teams
-  app (1:1, group chat and team scopes) to your org catalog. This requires the
-  `TEAMS_APP_*` variables and `AppCatalog.ReadWrite.All` (see AGENT.md, *Teams
-  Publishing Prerequisites*).
-- **Foundry portal:** publish any agent, for example `customer360-assistant`, to
-  Teams **and Microsoft 365 Copilot** from the Azure AI Foundry portal (steps
-  below). This is the path that makes the agent available in Microsoft 365
-  Copilot.
+- **Automated (`azd up`):** postprovision Steps 7–9 publish **both**
+  `salesforce-assistant` and `customer360-assistant` (v3). Each one gets a Foundry
+  Agent Application, an immutable `<agent>-v<N>` deployment that receives 100% of
+  the traffic only after a smoke test passes, and its own Azure Bot Service, whose
+  messaging endpoint is the application's activity-protocol endpoint. Each one
+  also gets its own Teams app (1:1, group chat and team scopes) in your org
+  catalog. Every publish patch-bumps the manifest version from the latest
+  catalog `appDefinition`. Publishing requires the `TEAMS_APP_*` variables and
+  `AppCatalog.ReadWrite.All` on the deployer's Graph token (see AGENT.md, *Teams
+  Publishing Prerequisites*). If the scope is missing, the Teams step logs a
+  warning and the rest of the hook still succeeds. Roll back the agents with
+  `python hooks/postprovision.py --rollback`.
+- **Foundry portal:** publish any agent to Teams **and Microsoft 365 Copilot**
+  from the Azure AI Foundry portal (steps below). This path also makes the agent
+  available in Microsoft 365 Copilot.
 
 Foundry handles the channel integration, SSO, and tool approval UX natively.
 
@@ -92,9 +97,11 @@ agents, not for initial publishing.
 
 ### Tool Approval
 
-Foundry's native Teams/Copilot integration shows tool approval prompts
-with Approve/Deny buttons. The user decides which MCP tools to execute.
-This is configured via `require_approval: "always"` on the agent's MCP tool.
+Both agents use `require_approval: "never"`: SDK-level approval prompts break in
+Teams. Writes are guarded conversationally instead. The lean system prompt and the
+`salesforce-crm` / `servicenow-itsm` skills require the agent to confirm with the
+user before any create, update, delete or approval action. The v3 E2E script
+checks this in its *Write guard* turn.
 
 ### Identity Caveat
 
@@ -106,6 +113,56 @@ This changes the `appid` claim in tokens but does NOT break OBO because:
   compatibility only), not `appid`
 - The user's `oid` is preserved in the token (identity propagation intact)
 - The 3-phase OBO exchange uses `oid` to look up the SF username
+
+## v3 Teams smoke test (manual)
+
+The hook publishes both agents, but a human runs the Teams test. Use two
+accounts: the admin and the demo user. Record the date, the agent versions
+(`SF_AGENT_VERSION`, `C360_AGENT_VERSION` in `azd env get-values`), and the
+results in `.ai/e2e-results-history.md`.
+
+**Before you start**
+
+- [ ] `azd env get-values` shows `SF_DEPLOYMENT_ID` / `C360_DEPLOYMENT_ID`. The hook
+      already asserted that each application routes 100% to them.
+- [ ] The post-route E2E passed:
+      `python scripts/test_e2e_customer360.py --path app`.
+- [ ] Both apps appear in Teams → Apps → *Built for your org*: **Salesforce
+      Assistant** and **Customer 360 Assistant**. If they don't, the catalog step
+      warned about `AppCatalog.ReadWrite.All`. Upload them from the Teams admin
+      center instead.
+
+**For each user, in a 1:1 chat with each app**
+
+| # | Message | Expected |
+|---|---------|----------|
+| 1 | `Who am I in Salesforce?` (both apps) | First use shows a sign-in/consent card. After consent, the answer gives **this user's** SF username (not the other account's) |
+| 2 | `Who am I in ServiceNow?` (Customer 360) | A second consent for ServiceNow, then this user's `sys_user` name |
+| 3 | `Give me a Customer 360 view for Contoso Ltd` | Data from both systems in one answer |
+| 4 | `P1/P2 incidents with affected Salesforce accounts — rank by revenue at risk` | Ranked list that leads with amounts (`revenue-at-risk` skill) |
+| 5 | `Change the Industry of Acme Corp to Retail` | The agent asks for confirmation and **does not write** until the user says yes |
+| 6 | Same as 1, in a group chat with both users | Each user sees their own identity, with no cross-user leakage |
+
+**Verify identity outside Teams (run these after the test)**
+
+- [ ] Salesforce → Setup → Login History: one `JWT Bearer` login per test user
+      in the test window, under each user's own username.
+- [ ] APIM gateway logs (workspace `log-sf-mcp-obo`, legacy table) contain 200s
+      for both APIs, with no 401/403 in the window:
+
+      ```kql
+      AzureDiagnostics
+      | where Category == 'GatewayLogs' and TimeGenerated > ago(2h)
+      | where apiId_s in ('salesforce-mcp-obo','servicenow-mcp-obo')
+      | summarize calls=count(), errors=countif(responseCode_d >= 400)
+          by apiId_s, bin(TimeGenerated, 10m)
+      ```
+
+- [ ] ServiceNow → System Logs → Transactions: the queries ran as each
+      user's `sys_user`, not as an integration account.
+
+If anything fails, roll back with `python hooks/postprovision.py --rollback`. It
+routes each application back to the deployment recorded before the publish.
 
 ## Troubleshooting
 

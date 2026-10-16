@@ -368,8 +368,11 @@ All five are set via `azd env set` before `azd up`. The certificate thumbprint i
 | `IDENTITY_CLAIM_NAME` | No | Azure AD JWT claim for user identity (default: `oid`) |
 | `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid naming conflicts |
 | `AZURE_LOCATION` | No | Azure region (default: `swedencentral`) |
+| `C360_TOOLS_MODE` | No | v3: `direct` (default, one MCP tool per system) or `toolbox` (one Foundry Toolbox) |
+| `SKILLS_MODE` | No | v3: `inline` (default, pinned skill versions compiled into the instructions) or `native` (needs the GitHub Copilot harness) |
+| `AGENT_MODEL` | No | Model deployment for both agents (default: `gpt-5.4`) |
 
-Teams publishing adds `TEAMS_APP_DEVELOPER_NAME`, `TEAMS_APP_PRIVACY_URL` and `TEAMS_APP_TERMS_URL` (see [Teams integration](teams-integration.md)).
+Teams publishing adds `TEAMS_APP_DEVELOPER_NAME`, `TEAMS_APP_PRIVACY_URL` and `TEAMS_APP_TERMS_URL` (see [Teams integration](teams-integration.md)). The hook writes the bot and staged-publish state itself (`AGENT_BOT_*`, `C360_BOT_*`, `*_AGENT_VERSION`, `*_DEPLOYMENT_ID`, `*_PREV_*`). `python hooks/postprovision.py --rollback` routes each agent back to its `*_PREV_DEPLOYMENT_ID`.
 
 ---
 

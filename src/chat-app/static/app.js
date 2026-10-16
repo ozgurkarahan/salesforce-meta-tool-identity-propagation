@@ -652,7 +652,7 @@ function handleResponse(data) {
         for (let i = 0; i < data.tool_calls.length; i++) {
             const tc = data.tool_calls[i];
             const tcSource = tc.name === 'memory_search' ? 'MEM' : 'MCP';
-            debugLog(tcSource, 'tool=' + tc.name + (tc.error ? ' ERROR: ' + tc.error : ' OK'));
+            debugLog(tcSource, 'tool=' + (tc.system ? tc.system + ':' : '') + tc.name + (tc.error ? ' ERROR: ' + tc.error : ' OK'));
             // Show usage on the last tool call card of this turn
             const isLast = i === data.tool_calls.length - 1;
             addToolCallCard(tc, isLast ? data.usage : null);
@@ -794,7 +794,7 @@ function addToolCallCard(tc, usage) {
         '<div class="message-content tool-call-content">' +
             '<div class="tool-call-header" onclick="toggleToolDetails(this)">' +
                 '<span class="tool-call-expand">&#9654;</span>' +
-                '<span class="tool-call-name">' + escapeHtml(tc.name) + '</span>' +
+                '<span class="tool-call-name">' + escapeHtml(toolSystemLabel(tc.system)) + escapeHtml(tc.name) + '</span>' +
                 '<span class="tool-call-status ' + statusClass + '">' + statusText + '</span>' +
             '</div>' +
             '<div class="tool-call-details" style="display: none;">' +
@@ -1526,10 +1526,18 @@ async function submitApproval(approvalIds, approve) {
 // OAuth consent UI (first call per user per connection)
 // ---------------------------------------------------------------------------
 
+function toolSystemLabel(system) {
+    if (system === 'salesforce') return 'Salesforce · ';
+    if (system === 'servicenow') return 'ServiceNow · ';
+    if (system === 'unknown') return 'Unknown system · ';
+    return '';
+}
+
 function consentSystemName(label) {
     const l = (label || '').toLowerCase();
     if (l.includes('salesforce')) return 'Salesforce';
     if (l.includes('servicenow')) return 'ServiceNow';
+    if (l.includes('toolbox')) return 'Salesforce / ServiceNow';
     return label || 'the connected system';
 }
 

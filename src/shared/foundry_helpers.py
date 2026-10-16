@@ -47,6 +47,24 @@ def create_foundry_client(access_token: str, project_endpoint: str = None):
     return AIProjectClient(endpoint=endpoint, credential=credential)
 
 
+# MCP server label -> backend system. Direct MCP tools use these labels as
+# server_label; through a Foundry Toolbox the call arrives as
+# "<server_label>___<tool>" (triple underscore) under the toolbox's own label.
+MCP_SYSTEMS = {
+    "salesforce_mcp": "salesforce",
+    "servicenow_mcp": "servicenow",
+}
+
+
+def tool_system(server_label: str, name: str):
+    """Return (system, bare_tool_name); unknown labels map to 'unknown'."""
+    label = server_label or ""
+    tool = name or ""
+    if "___" in tool:
+        label, tool = tool.split("___", 1)
+    return MCP_SYSTEMS.get(label, "unknown"), tool
+
+
 def parse_output_items(output_items, request_id: str = ""):
     """Parse Responses API output items into a structured result.
 
@@ -100,17 +118,21 @@ def parse_output_items(output_items, request_id: str = ""):
             )
 
         elif item_type == "mcp_call":
-            tool_name = getattr(item, "name", "")
+            server_label = getattr(item, "server_label", "") or ""
+            raw_name = getattr(item, "name", "") or ""
+            system, tool_name = tool_system(server_label, raw_name)
             tool_args = getattr(item, "arguments", {})
             tool_error = getattr(item, "error", None)
             logger.info(
-                "tool_call request_id=%s tool=%s args=%s error=%s",
-                request_id, tool_name,
+                "tool_call request_id=%s system=%s tool=%s server=%s args=%s error=%s",
+                request_id, system, tool_name, server_label,
                 str(tool_args)[:300],
                 str(tool_error)[:200] if tool_error else None,
             )
             result["tool_calls"].append({
                 "name": tool_name,
+                "system": system,
+                "server_label": server_label,
                 "arguments": tool_args,
                 "error": str(tool_error) if tool_error else None,
                 "output": getattr(item, "output", None),

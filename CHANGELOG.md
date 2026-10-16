@@ -8,6 +8,30 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **v3 — Foundry skills:** six versioned skills in `skills/<name>/SKILL.md`:
+  `salesforce-crm`, `servicenow-itsm`, `customer360-correlation`, `revenue-at-risk`,
+  `meeting-prep` and `change-risk`. The postprovision hook (`ensure_skills`) uploads
+  each one as a Foundry skill version, and only when its content changed. Agents
+  are pinned to those exact versions.
+- **v3 — Customer 360 toolbox (opt-in):** with `C360_TOOLS_MODE=toolbox`,
+  `customer360-assistant` reaches one version-pinned Foundry Toolbox. The toolbox
+  holds the SF and SN MCP servers, each on its own OAuth2 OBO connection, plus all
+  skills. The default stays `direct` (one MCP tool per system) until the two-user
+  identity gate of the toolbox spike passes (see `.ai/project-reference.md`).
+- **v3 — staged publish:** each agent gets an immutable `<agent>-v<N>` deployment.
+  The hook smoke-tests that exact version before routing, routes 100% of the
+  application's traffic to it and asserts the route. It records the previous route,
+  and `python hooks/postprovision.py --rollback` restores it. Agent, skill,
+  deployment and routing failures now fail the hook (the Teams catalog step stays
+  non-fatal).
+- **v3 — Teams for both agents:** `customer360-assistant` now gets its own Bot
+  Service (`botServiceC360` in `infra/main.bicep`; `C360_BOT_MSA_APP_ID` /
+  `C360_BOT_NAME`) and its own Teams app. The manifest version is patch-bumped
+  from the latest catalog `appDefinition` instead of a hard-coded `1.0.0`. The
+  manual smoke checklist is in `docs/teams-integration.md`.
+- **OAuth consent UX:** the web chat shows a sign-in card for each
+  `oauth_consent_request` and re-sends the message. The custom bot sends sign-in
+  links. The E2E script handles sequential SF/SN consents.
 - **Project page:** `site/` is a Customer 360 Assistant landing page on GitHub Pages
   (story video, plug-board diagram, identity journey, extension pattern). It is
   deployed by `.github/workflows/pages.yml` and reachable at
@@ -17,6 +41,29 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **v3 — lean system prompts:** domain know-how moved out of the prompts into
+  skills. Measured with the model's tokenizer, the base prompt is 85 tokens for SF
+  (v2: 585) and 128 for C360 (v2: 621). Prompt agents cannot load skills at runtime
+  on this platform yet. `PromptAgentDefinition.skills` needs the GitHub Copilot
+  harness (forbidden on our subscription), and toolbox skills are MCP *resources*
+  that the Responses MCP tool does not read. So the hook compiles the exact skill
+  versions into the instructions (`SKILLS_MODE=inline`, the default): 897 tokens
+  for SF and 3,403 for C360, as a static and cacheable prefix.
+  `SKILLS_MODE=native` attaches `SkillReference`s plus the harness once it is
+  enabled.
+- **v3 — idempotent agents:** a new agent or toolbox version is created only when
+  its definition fingerprint changes. Conversation starters go through the SDK
+  (no raw REST).
+- **Chat app:** every tool call carries an explicit `system`
+  (`salesforce` / `servicenow` / `unknown`) and the bare tool name. Toolbox calls
+  arrive as `<server_label>___<tool>`.
+- **E2E (`scripts/test_e2e_customer360.py`):** it attributes calls to SF/SN through
+  that map and runs one or more turns per skill, plus a write-guard turn (no write
+  without the user's confirmation). It targets the latest version, an exact version
+  (`--path version`, pre-route) or the routed application (`--path app`,
+  post-route), and exits non-zero on failure.
+- **Dependencies:** `azure-ai-projects==2.8.0` (pinned) and `openai`;
+  `azure-ai-agents` was dropped (unused).
 - **README:** rewritten business-first: build the engagement layer once, let one
   agent act across all your systems of record, as the signed-in user. The
   env-var, project-structure and troubleshooting tables moved to
@@ -29,6 +76,13 @@ All notable changes to this project are documented here. The format follows
 - **Docs:** `docs/deepdive.md` and the architecture diagram
   (`docs/diagrams/azure-architecture.*`, `site/assets/architecture.webp`) now
   show that measured figure and the `gpt-5.4` model deployment (was "GPT-4o").
+
+### Removed
+
+- **v3 — Foundry agent memory:** the agents no longer get the memory search tool or
+  the `project-memory` store. The `text-embedding-3-small` deployment, the store
+  itself and the chat app's memory UI are removed after the Teams smoke test, while
+  rollback to a v2 version is still possible.
 
 ### Fixed
 
