@@ -192,4 +192,6 @@
 
 **Identity:** SF Login History 22:52–22:54Z shows JWT Bearer logins only for the signed-in user (`ozgurkarahan…@agentforce.com`) plus the `svc.mcp.obo` service account (Phase-1 lookups). APIM 2h window: SF 179 calls and SN 186 calls, 0×401/403.
 
+**Teams smoke (manual, 2026-10-16 23:13–23:15Z):** Customer-360-Agent 1:1 chat plus the Salesforce Assistant app, run by the user. SF Login History shows only the signed-in user plus `svc.mcp.obo`. APIM shows 0 errors on both APIs. The write guard held: Acme Corp's Industry is unchanged (last modified 2026-03-18).
+
 ---

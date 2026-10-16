@@ -6,7 +6,7 @@ This file provides guidance to code agents when working with this repository.
 
 **Salesforce MCP OBO** — On-Behalf-Of (JWT Bearer) identity propagation for Salesforce MCP. User authenticates once to Azure AD; APIM exchanges the Azure AD token for a Salesforce token server-side via JWT Bearer flow. No Salesforce consent required. True OBO.
 
-**Status:** v3 is deployed to `sf-mcp-obo` from `feat/v3-skills-toolbox` (2026-10-16; salesforce-assistant v31, customer360-assistant v23, post-route E2E 7/7): Foundry skills, lean prompts, no agent memory, staged publish, and both agents in Teams. The Teams smoke test and the memory cleanup are pending. v2 is live: OAuth2 identity passthrough (2026-07-29). The OBO flow is **verified end-to-end**, and SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration and the v3 notes.
+**Status:** v3 is deployed to `sf-mcp-obo` from `feat/v3-skills-toolbox` (2026-10-16; salesforce-assistant v31, customer360-assistant v23, post-route E2E 7/7, Teams smoke passed): Foundry skills, lean prompts, no agent memory, staged publish, and both agents in Teams. v2 is live: OAuth2 identity passthrough (2026-07-29). The OBO flow is **verified end-to-end**, and SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration and the v3 notes.
 
 ## Architecture
 
