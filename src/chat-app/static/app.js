@@ -651,7 +651,7 @@ function handleResponse(data) {
     if (data.tool_calls && data.tool_calls.length > 0) {
         for (let i = 0; i < data.tool_calls.length; i++) {
             const tc = data.tool_calls[i];
-            const tcSource = tc.name === 'memory_search' ? 'MEM' : 'MCP';
+            const tcSource = 'MCP';
             debugLog(tcSource, 'tool=' + (tc.system ? tc.system + ':' : '') + tc.name + (tc.error ? ' ERROR: ' + tc.error : ' OK'));
             // Show usage on the last tool call card of this turn
             const isLast = i === data.tool_calls.length - 1;
@@ -1320,8 +1320,6 @@ function addDebugLogEntry(log) {
         sourceClass = 'source-mcp'; sourceLabel = 'MCP';
     } else if (source.includes('apim')) {
         sourceClass = 'source-apim'; sourceLabel = 'APIM';
-    } else if (msg.includes('memory_call') || msg.includes('memory_search')) {
-        sourceClass = 'source-memory'; sourceLabel = 'MEM';
     } else if (msg.includes('tool_call ') || msg.includes('tool=') || msg.includes('mcp_call') || msg.includes('mcp_list_tools')) {
         sourceClass = 'source-mcp'; sourceLabel = 'MCP';
     } else if (msg.includes('agent_call') || msg.includes('agent_output') || msg.includes('agent_response') || msg.includes('responses "http')) {

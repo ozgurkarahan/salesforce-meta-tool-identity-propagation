@@ -80,9 +80,10 @@ All notable changes to this project are documented here. The format follows
 ### Removed
 
 - **v3 — Foundry agent memory:** the agents no longer get the memory search tool or
-  the `project-memory` store. The `text-embedding-3-small` deployment, the store
-  itself and the chat app's memory UI are removed after the Teams smoke test, while
-  rollback to a v2 version is still possible.
+  the `project-memory` store. The chat app's memory parsing and MEM debug source are
+  gone, and so is the `text-embedding-3-small` deployment in Bicep. Incremental
+  deploys keep the live embedding deployment and the store, so a rollback to a v2
+  version still works. Delete both explicitly after the Teams smoke test.
 
 ### Fixed
 

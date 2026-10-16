@@ -213,7 +213,7 @@ azd up
   - Tool panel sidebar (waterfall timeline, stats, export)
   - Debug panel (App Insights log tail + instant local logs)
   - Markdown rendering (marked.js, bundled locally)
-  - Memory search visibility (Foundry MemorySearchTool results)
+  - OAuth consent cards (one sign-in per user per connected system)
   - Teams Bot Framework endpoint (`POST /api/messages`)
 - `src/shared/foundry_helpers.py` — shared agent call helpers (multi-agent: accepts `agent_name` + `project_endpoint`)
 

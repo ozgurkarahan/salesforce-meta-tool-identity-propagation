@@ -1093,7 +1093,6 @@ body {
 .debug-log-entry.source-mcp { color: #c586c0; }
 .debug-log-entry.source-apim { color: #9cdcfe; }
 .debug-log-entry.source-foundry { color: #4ec9b0; }
-.debug-log-entry.source-memory { color: #dcdcaa; }
 
 .debug-log-ts {
   color: #666;

@@ -138,47 +138,6 @@ def parse_output_items(output_items, request_id: str = ""):
                 "output": getattr(item, "output", None),
             })
 
-        elif item_type == "memory_search_call":
-            # Memory data lives in model_extra (Pydantic extra fields)
-            extra = getattr(item, "model_extra", {}) or {}
-            memories = extra.get("memories", []) or []
-            status = getattr(item, "status", "")
-            mem_id = getattr(item, "id", "")
-
-            # Format memory results for display
-            mem_entries = []
-            for mem in memories:
-                if isinstance(mem, dict):
-                    mem_entries.append(mem)
-                elif hasattr(mem, "model_dump"):
-                    mem_entries.append(mem.model_dump())
-                else:
-                    mem_entries.append({"text": str(mem)[:300]})
-
-            mem_count = len(mem_entries)
-            mem_output = ""
-            if mem_entries:
-                lines = []
-                for m in mem_entries[:10]:
-                    text = m.get("text", m.get("content", m.get("summary", "")))
-                    mtype = m.get("type", "")
-                    if text:
-                        lines.append(f"[{mtype}] {str(text)[:200]}" if mtype else str(text)[:200])
-                    else:
-                        lines.append(str(m)[:200])
-                mem_output = "\n".join(lines)
-
-            logger.info(
-                "memory_call request_id=%s id=%s status=%s results=%d",
-                request_id, mem_id, status, mem_count,
-            )
-            result["tool_calls"].append({
-                "name": "memory_search",
-                "arguments": {"status": status, "id": mem_id},
-                "error": None,
-                "output": mem_output or f"{mem_count} memory results",
-            })
-
         elif item_type == "message":
             content = getattr(item, "content", [])
             for c in content:
