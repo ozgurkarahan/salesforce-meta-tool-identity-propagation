@@ -82,8 +82,10 @@ All notable changes to this project are documented here. The format follows
 - **v3 — Foundry agent memory:** the agents no longer get the memory search tool or
   the `project-memory` store. The chat app's memory parsing and MEM debug source are
   gone, and so is the `text-embedding-3-small` deployment in Bicep. Incremental
-  deploys keep the live embedding deployment and the store, so a rollback to a v2
-  version still works. Delete both explicitly after the Teams smoke test.
+  deploys keep the live embedding deployment and the store. Both are **shared**, so
+  they are kept on `sf-mcp-obo`: `servicenow-assistant` (snow-meta-tool) still uses
+  the `project-memory` store, and the Foundry IQ `blob-kb` index/knowledge source still
+  embeds with `text-embedding-3-small`. Delete them only after those workloads move off.
 
 ### Fixed
 
