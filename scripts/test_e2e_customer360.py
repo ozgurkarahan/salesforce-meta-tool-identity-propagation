@@ -1,11 +1,16 @@
 """End-to-end test: Customer 360 agent via Foundry Responses API.
 
-Sends progressive cross-system queries through the Customer 360 agent
-and validates that both salesforce_mcp and servicenow_mcp tools are called.
-Reports per-turn token usage and cross-system validation summary.
+Sends progressive cross-system queries (one or more per skill) through the
+Customer 360 agent, attributes every MCP call to Salesforce or ServiceNow
+(direct tools or toolbox "<server>___<tool>" names), checks per-skill behaviour
+(including no write without user approval) and reports per-turn token usage.
+Exits non-zero when any check fails.
 
 Usage:
-    python scripts/test_e2e_customer360.py
+    python scripts/test_e2e_customer360.py                      # latest version
+    python scripts/test_e2e_customer360.py --path version --version 23   # pre-route
+    python scripts/test_e2e_customer360.py --path app           # routed application
+    python scripts/test_e2e_customer360.py --only 4,7
 """
 
 import io
@@ -99,7 +104,7 @@ def call_with_retry(func, max_retries=3, base_wait=30):
                 raise
 
 
-def handle_approval(openai_client, response, agent_name):
+def handle_approval(target, response, on_response=None):
     """Auto-approve MCP tool calls if needed (recursive). Protected by 429 retry."""
     output_items = getattr(response, "output", [])
     approval_items = [
@@ -123,11 +128,8 @@ def handle_approval(openai_client, response, agent_name):
     ]
 
     t0 = time.monotonic()
-    response = call_with_retry(lambda: openai_client.responses.create(
-        previous_response_id=response.id,
-        input=approval_input,
-        extra_body={"agent_reference": {"name": agent_name, "type": "agent_reference"}},
-    ))
+    response = call_with_retry(lambda: target.create(
+        previous_response_id=response.id, input=approval_input))
     elapsed = time.monotonic() - t0
 
     output_items = getattr(response, "output", [])
@@ -135,8 +137,10 @@ def handle_approval(openai_client, response, agent_name):
     print(f"  Output types: {output_types}")
     dump_output_items(output_items)
     print_usage("after approval", response, elapsed)
+    if on_response:
+        on_response(response)
 
-    return handle_approval(openai_client, response, agent_name)
+    return handle_approval(target, response, on_response)
 
 
 def smart_delay(prev_usage, prev_elapsed, base=10):
@@ -151,24 +155,145 @@ def smart_delay(prev_usage, prev_elapsed, base=10):
     return base
 
 
-def get_servers_called(output_items):
-    """Extract set of MCP server labels called in the response."""
-    servers = set()
-    for item in output_items:
-        if getattr(item, "type", "") == "mcp_call":
-            server = getattr(item, "server_label", "")
-            if server:
-                servers.add(server)
-    return servers
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP_PROTOCOL_API = "2025-11-15-preview"
+WRITE_TOOLS = {"write_record", "process_approval", "write"}
+BOTH = {"salesforce", "servicenow"}
+
+SCENARIOS = [
+    {
+        "label": "1. Unified lookup",
+        "skill": "customer360-correlation",
+        "query": "Tell me everything about Contoso Ltd — pull their account details, "
+                 "contacts, open opportunities, and cases from Salesforce, plus any "
+                 "incidents and change requests from ServiceNow.",
+        "expect_systems": BOTH,
+    },
+    {
+        "label": "2. Cross-system correlation",
+        "skill": "customer360-correlation",
+        "query": "Acme Corp reports API gateway outages — what's the full picture? "
+                 "Check both their Salesforce cases and ServiceNow incidents.",
+        "expect_systems": BOTH,
+    },
+    {
+        "label": "3. Meeting prep",
+        "skill": "meeting-prep",
+        "query": "Prepare me for my call with Fabrikam Inc tomorrow. "
+                 "Pull their account details, any open opportunities, and active incidents.",
+        "expect_systems": BOTH,
+    },
+    {
+        "label": "4. Revenue at risk",
+        "skill": "revenue-at-risk",
+        "query": "Show me all P1 and P2 incidents from ServiceNow, then for each one "
+                 "identify which Salesforce accounts are affected and their total "
+                 "pipeline value. Rank by revenue at risk.",
+        "expect_systems": BOTH,
+        "expect_text_any": ["$", "USD", "€", "EUR"],
+    },
+    {
+        "label": "5. Change risk",
+        "skill": "change-risk",
+        "query": "Which upcoming ServiceNow change requests could affect Salesforce "
+                 "accounts with open opportunities? Assess the risk for each.",
+        "expect_systems": BOTH,
+    },
+    {
+        "label": "6. Escalation (read-only)",
+        "skill": "salesforce-crm + servicenow-itsm",
+        "query": "Show me the P1 incidents from ServiceNow that are currently unresolved. "
+                 "For the most critical one, check Salesforce to see if there's already "
+                 "a case. If not, describe what a new escalation case would look like.",
+        "expect_systems": BOTH,
+        "forbid_tools": WRITE_TOOLS,
+    },
+    {
+        "label": "7. Write guard",
+        "skill": "salesforce-crm",
+        "query": "Change the Industry of Acme Corp to Retail.",
+        "expect_systems": set(),
+        "forbid_tools": WRITE_TOOLS,
+        "expect_text_any": ["confirm", "proceed", "?"],
+    },
+]
+
+
+def wait_for_consent():
+    """ENTER on a terminal; with CONSENT_FLAG_FILE set, wait for that file instead
+    (lets a background run continue after the user consents)."""
+    flag = os.environ.get("CONSENT_FLAG_FILE", "")
+    if not flag:
+        input("\n  Press ENTER after completing authentication...")
+        return
+    print(f"  Waiting for {flag} (create it after consenting)...", flush=True)
+    while not os.path.exists(flag):
+        time.sleep(5)
+    os.remove(flag)
+
+
+def get_calls(output_items):
+    """[(system, tool)] for every mcp_call; works for direct MCP tools and toolbox names."""
+    from foundry_helpers import tool_system
+    return [tool_system(getattr(it, "server_label", ""), getattr(it, "name", ""))
+            for it in output_items if getattr(it, "type", "") == "mcp_call"]
+
+
+class Target:
+    """Where E2E requests go: agent_reference (latest), an exact version, or the
+    published Agent Application endpoint (what Teams traffic is routed to)."""
+
+    def __init__(self, path, agent, version, app, project_endpoint, credential, project_client):
+        self.path = path
+        self.ref = None
+        if path == "app":
+            from openai import OpenAI
+            token = credential.get_token("https://ai.azure.com/.default").token
+            base = f"{project_endpoint.rstrip('/')}/applications/{app}/protocols/openai"
+            self.client = OpenAI(base_url=base, api_key=token,
+                                 default_query={"api-version": APP_PROTOCOL_API})
+            self.description = f"application '{app}' (routed deployment)"
+        else:
+            self.client = project_client.get_openai_client()
+            self.ref = {"name": agent, "type": "agent_reference"}
+            if path == "version":
+                self.ref["version"] = str(version)
+                self.description = f"agent '{agent}' v{version} (pre-route)"
+            else:
+                self.description = f"agent '{agent}' (agent_reference, latest)"
+
+    def create(self, **kwargs):
+        if self.path == "app":
+            # Application-scoped Responses are stateless: no previous_response_id.
+            kwargs.pop("previous_response_id", None)
+        if self.ref:
+            kwargs["extra_body"] = {"agent_reference": self.ref}
+        return self.client.responses.create(**kwargs)
+
+
+def parse_args():
+    import argparse
+    p = argparse.ArgumentParser(description="Customer 360 E2E (v3)")
+    p.add_argument("--agent", default="customer360-assistant")
+    p.add_argument("--app", help="Agent Application name for --path app (default: --agent)")
+    p.add_argument("--path", choices=["reference", "version", "app"], default="reference",
+                   help="reference = latest agent version; version = exact --version "
+                        "(pre-route); app = published application endpoint (post-route)")
+    p.add_argument("--version", help="agent version for --path version "
+                                     "(default: C360_AGENT_VERSION from azd env)")
+    p.add_argument("--only", help="comma-separated scenario numbers, e.g. 4,7")
+    return p.parse_args()
 
 
 def main():
+    args = parse_args()
     print("=" * 70)
-    print("  E2E Test: Customer 360 Agent (SF + SN)")
+    print("  E2E Test: Customer 360 Agent (SF + SN) — v3")
     print("=" * 70)
     print()
 
     load_azd_env()
+    sys.path.insert(0, os.path.join(REPO_ROOT, "src", "shared"))
 
     project_endpoint = os.environ.get("AI_FOUNDRY_PROJECT_ENDPOINT", "")
     if not project_endpoint:
@@ -179,86 +304,23 @@ def main():
         from azure.identity import DefaultAzureCredential
         from azure.ai.projects import AIProjectClient
     except ImportError:
-        print("ERROR: pip install azure-ai-projects azure-identity")
+        print("ERROR: pip install -r requirements.txt")
         sys.exit(1)
 
     credential = DefaultAzureCredential()
     client = AIProjectClient(endpoint=project_endpoint, credential=credential)
-    openai_client = client.get_openai_client()
-
-    # Find agent
-    agent_name = "customer360-assistant"
-    agents = list(client.agents.list())
-    agent = None
-    for a in agents:
-        name = getattr(a, "name", "")
-        if name == agent_name or name.startswith(f"{agent_name}-"):
-            agent = a
-            break
-
-    if not agent:
-        names = [getattr(a, "name", "?") for a in agents]
-        print(f"ERROR: {agent_name} not found (agents: {names})")
-        sys.exit(1)
-
-    actual_name = getattr(agent, "name", agent_name)
-    print(f"Agent:    {actual_name}")
+    version = args.version or os.environ.get("C360_AGENT_VERSION", "")
+    if args.path == "version" and not version:
+        version = client.agents.get(args.agent).as_dict()["versions"]["latest"]["version"]
+    target = Target(args.path, args.agent, version, args.app or args.agent,
+                    project_endpoint, credential, client)
+    print(f"Target:   {target.description}")
     print(f"Endpoint: {project_endpoint}")
-    print()
 
-    # Progressive demo scenarios — multi-turn conversation
-    scenarios = [
-        {
-            "label": "1. Unified lookup",
-            "query": "Tell me everything about Contoso Ltd — pull their account details, "
-                     "contacts, open opportunities, and cases from Salesforce, plus any "
-                     "incidents and change requests from ServiceNow.",
-            "expect_tools": {"salesforce_mcp", "servicenow_mcp"},
-            "demonstrates": "Multi-tool orchestration, data correlation",
-        },
-        {
-            "label": "2. Cross-system correlation",
-            "query": "Acme Corp reports API gateway outages — what's the full picture? "
-                     "Check both their Salesforce cases and ServiceNow incidents.",
-            "expect_tools": {"salesforce_mcp", "servicenow_mcp"},
-            "demonstrates": "SF Cases to SN Incidents correlation",
-        },
-        {
-            "label": "3. Meeting prep",
-            "query": "Prepare me for my call with Fabrikam Inc tomorrow. "
-                     "Pull their account details, any open opportunities, and active incidents.",
-            "expect_tools": {"salesforce_mcp", "servicenow_mcp"},
-            "demonstrates": "Account summary + open opps + active incidents",
-        },
-        {
-            "label": "4. Proactive insights",
-            "query": "Which of our strategic accounts (by revenue) have the most "
-                     "open incidents in ServiceNow? Show revenue at risk.",
-            "expect_tools": {"salesforce_mcp", "servicenow_mcp"},
-            "demonstrates": "Cross-system analytics, prioritization",
-        },
-        {
-            "label": "5. Cross-system actions (read-only)",
-            "query": "Show me the P1 incidents from ServiceNow that are currently unresolved. "
-                     "For the most critical one, check Salesforce to see if there's already "
-                     "a case. If not, describe what a new escalation case would look like.",
-            "expect_tools": {"salesforce_mcp", "servicenow_mcp"},
-            "demonstrates": "Write operations across both systems (describe only)",
-        },
-        {
-            "label": "6. Escalation workflow",
-            "query": "Show me all P1 and P2 incidents from ServiceNow, then for each one "
-                     "identify which Salesforce accounts are affected and their total "
-                     "pipeline value. Rank by revenue at risk.",
-            "expect_tools": {"salesforce_mcp", "servicenow_mcp"},
-            "demonstrates": "Multi-system read + action orchestration",
-        },
-    ]
-
-    # Create conversation
-    conversation = openai_client.conversations.create()
-    print(f"Conversation: {conversation.id}")
-    print()
+    scenarios = SCENARIOS
+    if args.only:
+        wanted = {s.strip() for s in args.only.split(",")}
+        scenarios = [s for s in SCENARIOS if s["label"].split(".")[0] in wanted]
 
     all_usage = []
     all_validation = []
@@ -266,7 +328,6 @@ def main():
     prev_elapsed = 0.0
 
     for i, scenario in enumerate(scenarios):
-        # Token-aware pacing — heavier turns get more cooldown
         if i > 0:
             last = all_usage[-1] if all_usage else None
             delay = smart_delay(last, prev_elapsed)
@@ -274,88 +335,89 @@ def main():
             time.sleep(delay)
 
         print(f"\n{'='*70}")
-        print(f"  {scenario['label']}")
+        print(f"  {scenario['label']}  [skill: {scenario['skill']}]")
         print(f"  Query: {scenario['query'][:100]}...")
-        print(f"  Demonstrates: {scenario['demonstrates']}")
         print(f"{'='*70}")
 
         t0 = time.monotonic()
-        all_servers = set()
+        calls = []
         try:
-            kwargs = {
-                "input": scenario["query"],
-                "extra_body": {"agent_reference": {"name": actual_name, "type": "agent_reference"}},
-            }
+            kwargs = {"input": scenario["query"]}
             if prev_response_id:
                 kwargs["previous_response_id"] = prev_response_id
-            else:
-                kwargs["conversation"] = conversation.id
-
-            response = call_with_retry(lambda: openai_client.responses.create(**kwargs))
+            response = call_with_retry(lambda: target.create(**kwargs))
             elapsed = time.monotonic() - t0
 
             output_items = getattr(response, "output", [])
-            output_types = [getattr(item, "type", "unknown") for item in output_items]
             print(f"\n  Response ID: {response.id}")
-            print(f"  Output types: {output_types}")
+            print(f"  Output types: {[getattr(it, 'type', 'unknown') for it in output_items]}")
             dump_output_items(output_items)
-            all_servers.update(get_servers_called(output_items))
+            calls += get_calls(output_items)
 
-            # Handle OAuth consent (first time)
-            consent_items = [
-                item for item in output_items
-                if getattr(item, "type", "") == "oauth_consent_request"
-            ]
-            if consent_items:
+            # OAuth consent — one per connection (SF and SN may arrive in turn)
+            for _ in range(3):
+                consent_items = [it for it in output_items
+                                 if getattr(it, "type", "") == "oauth_consent_request"]
+                if not consent_items:
+                    break
                 consent_link = getattr(consent_items[0], "consent_link", "")
-                print(f"\n  OAuth consent required: {consent_link[:100]}")
-                import webbrowser
-                try:
-                    webbrowser.open(consent_link)
-                    print("  (Opening in browser...)")
-                except Exception:
-                    pass
-                input("\n  Press ENTER after completing authentication...")
+                label = getattr(consent_items[0], "server_label", "")
+                print(f"\n  OAuth consent required ({label}). Open as the SAME user:\n  {consent_link}",
+                      flush=True)
+                if not os.environ.get("CONSENT_FLAG_FILE"):
+                    import webbrowser
+                    try:
+                        webbrowser.open(consent_link)
+                        print("  (Opening in browser...)")
+                    except Exception:
+                        pass
+                wait_for_consent()
 
                 t0 = time.monotonic()
-                response = call_with_retry(lambda: openai_client.responses.create(
-                    previous_response_id=response.id,
-                    input=scenario["query"],
-                    extra_body={"agent_reference": {"name": actual_name, "type": "agent_reference"}},
-                ))
+                response = call_with_retry(lambda: target.create(
+                    previous_response_id=response.id, input=scenario["query"]))
                 elapsed = time.monotonic() - t0
                 output_items = getattr(response, "output", [])
                 dump_output_items(output_items)
-                all_servers.update(get_servers_called(output_items))
+                calls += get_calls(output_items)
 
-            # Handle MCP approvals (429-protected)
-            response = handle_approval(openai_client, response, actual_name)
+            response = handle_approval(
+                target, response, on_response=lambda r: calls.extend(
+                    get_calls(getattr(r, "output", []))))
             output_items = getattr(response, "output", [])
-            all_servers.update(get_servers_called(output_items))
 
             usage = print_usage(scenario["label"], response, elapsed)
+            text = getattr(response, "output_text", "") or ""
 
-            # Count tool calls for metrics
-            tool_calls = len([it for it in output_items if getattr(it, "type", "") == "mcp_call"])
+            systems = {s for s, _ in calls}
+            problems = []
+            missing = scenario.get("expect_systems", set()) - systems
+            if missing:
+                problems.append(f"no call to {sorted(missing)}")
+            if "unknown" in systems:
+                problems.append("unattributed tool call (unknown system)")
+            writes = [f"{s}:{t}" for s, t in calls if t in scenario.get("forbid_tools", set())]
+            if writes:
+                problems.append(f"write without approval: {writes}")
+            expect_text = scenario.get("expect_text_any")
+            if expect_text and not any(x.lower() in text.lower() for x in expect_text):
+                problems.append(f"answer lacks any of {expect_text}")
 
-            # Validate expected tools
-            expected = scenario.get("expect_tools", set())
-            if expected and not expected.issubset(all_servers):
-                missing = expected - all_servers
-                print(f"\n  WARN: Expected tools from {missing} but only got {all_servers}")
+            if problems:
+                print(f"\n  FAIL: {'; '.join(problems)}  (calls: {calls})")
                 all_validation.append(False)
             else:
-                print(f"\n  OK: Called tools from {all_servers}")
+                print(f"\n  OK: systems={sorted(systems) or ['none']} calls={len(calls)}")
                 all_validation.append(True)
 
-            servers_str = "+".join(sorted(s.replace("_mcp", "").upper()[:2] for s in all_servers)) or "none"
+            servers_str = "+".join(sorted(s[:2].upper() for s in systems)) or "none"
             if usage:
                 all_usage.append({
                     "turn": i + 1,
                     "label": scenario["label"],
                     "servers": servers_str,
                     "elapsed": round(elapsed, 1),
-                    "tools": tool_calls,
+                    "tools": len(calls),
                     **usage,
                 })
 
@@ -371,36 +433,34 @@ def main():
             if hasattr(e, "response") and hasattr(e.response, "text"):
                 print(f"  Response: {e.response.text[:500]}")
 
-    # Summary
     print(f"\n\n{'='*70}")
     print("  SUMMARY: Token Usage Per Turn")
     print(f"{'='*70}")
     print(f"  {'Turn':<6} {'Input':>8} {'Output':>8} {'Total':>8} {'Cached':>8} {'Time':>6} {'Tools':>5}  {'Servers':<8} Label")
     print(f"  {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6} {'-'*5}  {'-'*8} {'-'*28}")
-
     for u in all_usage:
         print(
             f"  {u['turn']:<6} {u['input']:>8,} {u['output']:>8,} "
             f"{u['total']:>8,} {u['cached']:>8,} {u['elapsed']:>5.1f}s {u['tools']:>5}  "
             f"{u['servers']:<8} {u['label']}"
         )
-
     if all_usage:
         print(f"  {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6} {'-'*5}")
-        total_elapsed = sum(u["elapsed"] for u in all_usage)
-        total_tools = sum(u["tools"] for u in all_usage)
         print(
             f"  {'TOTAL':<6} {sum(u['input'] for u in all_usage):>8,} "
             f"{sum(u['output'] for u in all_usage):>8,} "
             f"{sum(u['total'] for u in all_usage):>8,} "
-            f"{'':>8} {total_elapsed:>5.1f}s {total_tools:>5}"
+            f"{'':>8} {sum(u['elapsed'] for u in all_usage):>5.1f}s "
+            f"{sum(u['tools'] for u in all_usage):>5}"
         )
 
     passed = sum(all_validation)
     total = len(all_validation)
     mark = "pass" if passed == total else "FAIL"
-    print(f"\n  Cross-system validation: {passed}/{total} turns called expected tools ({mark})")
+    print(f"\n  Behavioural checks: {passed}/{total} turns passed ({mark})")
+    print(f"  Target: {target.description}")
     print()
+    sys.exit(0 if passed == total else 1)
 
 
 if __name__ == "__main__":

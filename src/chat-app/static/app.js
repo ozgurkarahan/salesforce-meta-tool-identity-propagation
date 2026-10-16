@@ -7,6 +7,7 @@ let lastResponseId = null;
 let msalConfig = null;
 let appInsights = null;
 let pendingApprovalIds = null;
+let lastUserMessage = null;
 let sessionId = crypto.randomUUID();
 
 // Tool call history for panel + export
@@ -545,15 +546,19 @@ function useSuggestion(text) {
     sendMessage();
 }
 
-async function sendMessage() {
+async function sendMessage(resendMessage) {
     const input = document.getElementById('messageInput');
-    const message = input.value.trim();
+    const isResend = typeof resendMessage === 'string';
+    const message = isResend ? resendMessage : input.value.trim();
     if (!message) return;
 
-    input.value = '';
-    document.getElementById('welcome').style.display = 'none';
-    document.getElementById('smartSuggestions').style.display = 'none';
-    addMessage('user', message);
+    if (!isResend) {
+        input.value = '';
+        document.getElementById('welcome').style.display = 'none';
+        document.getElementById('smartSuggestions').style.display = 'none';
+        addMessage('user', message);
+    }
+    lastUserMessage = message;
     setLoading(true);
     debugLog('CHAT', 'Sending: "' + message.substring(0, 80) + '"');
 
@@ -646,15 +651,18 @@ function handleResponse(data) {
     if (data.tool_calls && data.tool_calls.length > 0) {
         for (let i = 0; i < data.tool_calls.length; i++) {
             const tc = data.tool_calls[i];
-            const tcSource = tc.name === 'memory_search' ? 'MEM' : 'MCP';
-            debugLog(tcSource, 'tool=' + tc.name + (tc.error ? ' ERROR: ' + tc.error : ' OK'));
+            const tcSource = 'MCP';
+            debugLog(tcSource, 'tool=' + (tc.system ? tc.system + ':' : '') + tc.name + (tc.error ? ' ERROR: ' + tc.error : ' OK'));
             // Show usage on the last tool call card of this turn
             const isLast = i === data.tool_calls.length - 1;
             addToolCallCard(tc, isLast ? data.usage : null);
         }
     }
 
-    if (data.approval_required) {
+    if (data.consent_required) {
+        setLoading(false);
+        showConsentUI(data.consent || [], lastUserMessage);
+    } else if (data.approval_required) {
         setLoading(false);
         showApprovalUI(data.approval_ids);
     } else if (data.text) {
@@ -786,7 +794,7 @@ function addToolCallCard(tc, usage) {
         '<div class="message-content tool-call-content">' +
             '<div class="tool-call-header" onclick="toggleToolDetails(this)">' +
                 '<span class="tool-call-expand">&#9654;</span>' +
-                '<span class="tool-call-name">' + escapeHtml(tc.name) + '</span>' +
+                '<span class="tool-call-name">' + escapeHtml(toolSystemLabel(tc.system)) + escapeHtml(tc.name) + '</span>' +
                 '<span class="tool-call-status ' + statusClass + '">' + statusText + '</span>' +
             '</div>' +
             '<div class="tool-call-details" style="display: none;">' +
@@ -1312,8 +1320,6 @@ function addDebugLogEntry(log) {
         sourceClass = 'source-mcp'; sourceLabel = 'MCP';
     } else if (source.includes('apim')) {
         sourceClass = 'source-apim'; sourceLabel = 'APIM';
-    } else if (msg.includes('memory_call') || msg.includes('memory_search')) {
-        sourceClass = 'source-memory'; sourceLabel = 'MEM';
     } else if (msg.includes('tool_call ') || msg.includes('tool=') || msg.includes('mcp_call') || msg.includes('mcp_list_tools')) {
         sourceClass = 'source-mcp'; sourceLabel = 'MCP';
     } else if (msg.includes('agent_call') || msg.includes('agent_output') || msg.includes('agent_response') || msg.includes('responses "http')) {
@@ -1512,6 +1518,66 @@ async function submitApproval(approvalIds, approve) {
     }
 
     setLoading(false);
+}
+
+// ---------------------------------------------------------------------------
+// OAuth consent UI (first call per user per connection)
+// ---------------------------------------------------------------------------
+
+function toolSystemLabel(system) {
+    if (system === 'salesforce') return 'Salesforce · ';
+    if (system === 'servicenow') return 'ServiceNow · ';
+    if (system === 'unknown') return 'Unknown system · ';
+    return '';
+}
+
+function consentSystemName(label) {
+    const l = (label || '').toLowerCase();
+    if (l.includes('salesforce')) return 'Salesforce';
+    if (l.includes('servicenow')) return 'ServiceNow';
+    if (l.includes('toolbox')) return 'Salesforce / ServiceNow';
+    return label || 'the connected system';
+}
+
+function showConsentUI(consents, originalMessage) {
+    const container = document.getElementById('chatContainer');
+    const div = document.createElement('div');
+    div.className = 'message approval';
+
+    let linksHtml = '';
+    for (const c of consents) {
+        const link = c.consent_link || '';
+        if (!/^https:\/\//i.test(link)) continue;
+        linksHtml +=
+            '<div class="approval-tool">' +
+                '<a class="approval-btn approve-btn consent-link" href="' + escapeAttr(link) +
+                '" target="_blank" rel="noopener noreferrer">Sign in to ' +
+                escapeHtml(consentSystemName(c.server_label)) + '</a>' +
+            '</div>';
+    }
+
+    div.innerHTML =
+        '<div class="message-avatar approval-avatar">?</div>' +
+        '<div class="message-content approval-content">' +
+            '<div class="approval-header">' +
+                '<span class="approval-badge">Sign-in required</span>' +
+            '</div>' +
+            '<div>One-time consent so the agent can act as you. Complete the sign-in in the new tab, then continue.</div>' +
+            linksHtml +
+            '<div class="approval-actions">' +
+                '<button class="approval-btn approve-btn consent-continue">I\'ve signed in \u2014 continue</button>' +
+            '</div>' +
+        '</div>';
+
+    div.querySelector('.consent-continue').addEventListener('click', () => {
+        const actions = div.querySelector('.approval-actions');
+        if (actions) actions.innerHTML = '<span class="approval-decision approved">Continuing\u2026</span>';
+        debugLog('CHAT', 'Consent completed, re-sending original message');
+        sendMessage(originalMessage);
+    }, { once: true });
+
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
 }
 
 // ---------------------------------------------------------------------------

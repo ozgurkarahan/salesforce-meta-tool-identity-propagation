@@ -259,7 +259,7 @@ def check_b3_cognitive_deployments(ctx: Ctx) -> tuple[bool, str, Any]:
     deps = az(f'cognitiveservices account deployment list --name "{acct}" -g "{ctx.rg}"',
               subscription=ctx.subscription) or []
     names = {d.get("name"): d.get("properties", {}).get("provisioningState") for d in deps}
-    expected = ["gpt-5.4", "text-embedding-3-small"]
+    expected = ["gpt-5.4"]
     missing = [n for n in expected if n not in names]
     not_succeeded = [n for n, s in names.items() if s != "Succeeded"]
     ok = not missing and not not_succeeded
@@ -725,7 +725,7 @@ CHECKS: list[Check] = [
     Check("A3", "Bicep convergence", "All ARM deployments Succeeded", check_a3_deployments_succeeded),
     Check("B1", "Resource inventory", "Expected resource types present in RG", check_b1_resource_inventory),
     Check("B2", "Resource inventory", "APIM SKU and provisioning state", check_b2_apim_sku),
-    Check("B3", "Resource inventory", "Cognitive deployments gpt-5.4 + text-embedding-3-small", check_b3_cognitive_deployments),
+    Check("B3", "Resource inventory", "Cognitive deployment gpt-5.4", check_b3_cognitive_deployments),
     Check("C1", "RBAC", "Chat App MI has Cognitive roles", check_c1_chatapp_cognitive_rbac),
     Check("C2", "RBAC", "Chat App MI has Reader at subscription scope", check_c2_chatapp_subscription_reader),
     Check("C3", "RBAC", "APIM MI has Key Vault Secrets User", check_c3_apim_kv_rbac),

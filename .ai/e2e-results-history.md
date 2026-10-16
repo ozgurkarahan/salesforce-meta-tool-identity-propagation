@@ -168,3 +168,30 @@
 - Context growth rate: ~9K per turn (driven by tool result accumulation)
 
 ---
+
+## Run 9 — v3: skills (inline, pinned), lean prompt, no memory, routed application
+**Date:** 2026-10-16
+**Change:** v3 — six Foundry skills compiled into the instructions (customer360-assistant v23), lean base prompt, memory removed, staged publish (`customer360-assistant-v23` deployment routed 100%)
+**Target:** `--path app` (published Agent Application = Teams path; stateless, so every turn is a fresh conversation)
+**Result:** 7/7 behavioural checks passed (6 skills + write guard)
+
+| Turn | Input | Output | Total | Cached | Tools | Servers | Label |
+|------|------:|-------:|------:|-------:|------:|---------|-------|
+| 1 | 20,478 | 1,246 | 21,724 | 0 | 5 | SF+SN | Unified lookup (customer360-correlation) |
+| 2 | 12,131 | 1,350 | 13,481 | 5,632 | 5 | SF+SN | Cross-system correlation |
+| 3 | 6,941 | 874 | 7,815 | 5,632 | 5 | SF+SN | Meeting prep |
+| 4 | 13,354 | 1,518 | 14,872 | 5,632 | 5 | SF+SN | Revenue at risk |
+| 5 | 12,423 | 1,695 | 14,118 | 5,632 | 3 | SF+SN | Change risk |
+| 6 | 15,176 | 949 | 16,125 | 5,632 | 3 | SF+SN | Escalation (read-only) |
+| 7 | 6,091 | 241 | 6,332 | 5,632 | 1 | SF | Write guard: read Acme, asked for confirmation, no write |
+| **TOTAL** | **86,594** | **7,873** | **94,467** | **33,792** | **27** | **7/7** | |
+
+**vs Run 8 (v2, memory ON, stateful 6-turn):** 94K vs 236K total tokens. Not strictly comparable, because v3 turns are stateless and include two new scenarios. The drop comes mainly from no memory and no accumulated conversation context. The static prompt prefix (~5.6K tokens: lean prompt + compiled skills + tool schemas) is cached from turn 2 onward.
+
+**Web-chat path (`--path reference`, `--only 4,7`):** 2/2 passed (23K tokens).
+
+**Identity:** SF Login History 22:52–22:54Z shows JWT Bearer logins only for the signed-in user (`ozgurkarahan…@agentforce.com`) plus the `svc.mcp.obo` service account (Phase-1 lookups). APIM 2h window: SF 179 calls and SN 186 calls, 0×401/403.
+
+**Teams smoke (manual, 2026-10-16 23:13–23:15Z):** Customer-360-Agent 1:1 chat plus the Salesforce Assistant app, run by the user. SF Login History shows only the signed-in user plus `svc.mcp.obo`. APIM shows 0 errors on both APIs. The write guard held: Acme Corp's Industry is unchanged (last modified 2026-03-18).
+
+---

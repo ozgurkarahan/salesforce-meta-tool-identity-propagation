@@ -88,7 +88,7 @@ Jira, SAP, Workday and your own APIs are **not included** in this repository; th
 
 - **Salesforce meta-tool server:** 7 tools (`whoami`, `list_objects`, `describe_object`, `soql_query`, `search_records`, `write_record`, `process_approval`) on Azure Container Apps.
 - **Identity gateway:** Azure API Management policies for the three-phase on-behalf-of (OBO) exchange.
-- **Foundry agents:** `salesforce-assistant` and `customer360-assistant`, wired through OAuth2 identity-passthrough connections.
+- **Foundry agents:** `salesforce-assistant` and `customer360-assistant`, wired through OAuth2 identity-passthrough connections. Their behaviour comes from six versioned [Foundry skills](skills/) (`salesforce-crm`, `servicenow-itsm`, `customer360-correlation`, `revenue-at-risk`, `meeting-prep`, `change-risk`), with a lean system prompt on top.
 - **Engagement:** a web chat app (MSAL.js), a Teams app published to your org catalog, and Microsoft 365 Copilot through [Foundry publishing](docs/teams-integration.md).
 - **Delivery:** Bicep and `azd`, Salesforce org setup scripts, demo-data seeding and E2E tests.
 
@@ -146,6 +146,13 @@ APIM handles a three-phase exchange: validate the Azure AD JWT, resolve the Sale
 | `process_approval` | Submit, approve, reject via Salesforce approval workflows |
 
 The seven tool definitions come to roughly 1.65K tokens per model call (about 2.1K with the server instructions), whatever the size of the org. Measured from the server's `tools/list` with the o200k_base tokenizer (October 2026); details in [docs/deepdive.md](docs/deepdive.md#why-this-scales). Field schemas are loaded on demand through `describe_object` rather than pre-loaded into the system prompt.
+
+### Skills and Publishing (v3)
+
+- **Skills:** each `skills/<name>/SKILL.md` becomes a Foundry skill version. `azd up` uploads a new version only when the content changes, and the agents pin exact versions. Prompt agents can't load skills at runtime yet, so the hook compiles the pinned versions into the instructions (`SKILLS_MODE=inline`). `SKILLS_MODE=native` is ready for when the GitHub Copilot harness is available. See [AGENT.md](AGENT.md#skills-v3).
+- **One toolbox (opt-in):** `azd env set C360_TOOLS_MODE toolbox` serves Customer 360 from a single Foundry Toolbox that holds both MCP servers and all skills.
+- **Staged publish:** every agent version gets its own deployment. The hook smoke-tests it before it receives Teams traffic, and `python hooks/postprovision.py --rollback` restores the previous version.
+- **E2E:** `python scripts/test_e2e_customer360.py [--path version|app]` runs one or more turns per skill plus a write guard.
 
 ### Deep Dive
 

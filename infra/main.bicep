@@ -38,6 +38,12 @@ param agentBotMsaAppId string = ''
 @description('Bot Service resource name (set by postprovision to adopt existing bot)')
 param agentBotName string = ''
 
+@description('Customer 360 Agent Application identity client ID for its Bot Service (set by postprovision)')
+param c360BotMsaAppId string = ''
+
+@description('Customer 360 Bot Service resource name (set by postprovision to adopt existing bot)')
+param c360BotName string = ''
+
 @description('Chat App Entra client ID (set by postprovision)')
 param chatAppEntraClientId string = ''
 
@@ -350,6 +356,22 @@ module botService 'modules/bot-service.bicep' = if (!empty(agentBotMsaAppId)) {
   }
 }
 
+module botServiceC360 'modules/bot-service.bicep' = if (!empty(c360BotMsaAppId)) {
+  name: 'bot-service-c360'
+  scope: rg
+  params: {
+    name: baseName
+    botName: !empty(c360BotName) ? c360BotName : 'c360-bot-${baseName}'
+    cognitiveAccountName: cognitive.outputs.cognitiveAccountName
+    projectName: cognitive.outputs.projectName
+    applicationName: 'customer360-assistant'
+    displayName: 'Customer 360 Assistant'
+    msaAppId: c360BotMsaAppId
+    tenantId: subscription().tenantId
+    appInsightsKey: monitoring.outputs.appInsightsInstrumentationKey
+  }
+}
+
 // ============================================================
 // Outputs (become azd env vars)
 // ============================================================
@@ -375,5 +397,6 @@ output APIM_SF_MCP_OBO_ENDPOINT string = apimSfMcpObo.outputs.sfMcpOboEndpoint
 output KEY_VAULT_NAME string = keyvault.outputs.keyVaultName
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.logAnalyticsWorkspaceGuid
 output AGENT_BOT_NAME string = !empty(agentBotMsaAppId) ? botService.outputs.botServiceName : '' // BCP318 is expected — conditional module
+output C360_BOT_NAME string = !empty(c360BotMsaAppId) ? botServiceC360.outputs.botServiceName : '' // BCP318 is expected — conditional module
 // CHAT_APP_ENTRA_CLIENT_ID set by postprovision hook
 // (Entra apps created via az CLI, not Bicep)

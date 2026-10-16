@@ -13,6 +13,9 @@ param projectName string
 @description('Agent Application name')
 param applicationName string = 'salesforce-assistant'
 
+@description('Bot display name')
+param displayName string = 'Salesforce Assistant'
+
 @description('Foundry-managed identity client ID (from Agent Application)')
 param msaAppId string
 
@@ -29,7 +32,7 @@ resource botService 'Microsoft.BotService/botServices@2023-09-15-preview' = {
   kind: 'azurebot'
   sku: { name: 'S1' }
   properties: {
-    displayName: 'Salesforce Assistant'
+    displayName: displayName
     description: 'Bot service for AI agent'
     endpoint: 'https://${cognitiveAccountName}.services.ai.azure.com/api/projects/${projectName}/applications/${applicationName}/protocols/activityprotocol?api-version=2025-11-15-preview'
     msaAppId: msaAppId

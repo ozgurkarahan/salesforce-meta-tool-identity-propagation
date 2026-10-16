@@ -754,6 +754,20 @@ async def _handle_message(turn_context):
         if tool_calls:
             attachments.append(_build_adaptive_card_for_tool_calls(tool_calls))
 
+        # First call per OAuth2 connection: user must consent once, then resend
+        if result.get("consent_required"):
+            links = [c.get("consent_link", "") for c in result.get("consent", [])
+                     if (c.get("consent_link") or "").startswith("https://")]
+            lines = "\n".join(f"- [Sign in]({link})" for link in links)
+            await turn_context.send_activity(
+                Activity(
+                    type=ActivityTypes.message,
+                    text=("One-time sign-in needed so the agent can act as you:\n"
+                          f"{lines}\n\nAfter signing in, send your message again."),
+                )
+            )
+            return
+
         # Check for approval request
         if result.get("approval_required"):
             approval_card = _build_approval_card(result.get("approval_ids", []))

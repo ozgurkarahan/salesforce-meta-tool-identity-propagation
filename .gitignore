@@ -61,3 +61,6 @@ err_ai.txt
 
 # Internal forensic evidence (tenant IDs/UPNs -- do not publish to this public repo)
 docs/apihub-oauth2-refresh-bug-evidence.*
+
+# v3 spike evidence (sanitized, local only)
+.spike/

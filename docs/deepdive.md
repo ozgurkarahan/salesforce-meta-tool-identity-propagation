@@ -380,6 +380,7 @@ This project is a proof of concept. Before using in production, consider:
 - **Certificate rotation**: The Key Vault certificate used for JWT Bearer signing has a default expiry of 365 days. Plan for rotation.
 - **Azure-specific infrastructure**: The deployment stack (APIM, AI Foundry, Container Apps) is Azure-native. Adapting this pattern to other clouds or self-hosted models requires replacing the infrastructure layer, though the [IdP flexibility](#idp-flexibility) section shows the authentication layer is modular.
 - **Rate limits**: The Salesforce REST API has per-org API call limits. High-frequency agentic workflows should account for this.
+- **Skills are compiled in, not loaded on demand (v3)**: Foundry prompt agents can't load skills at runtime yet. `PromptAgentDefinition.skills` needs the GitHub Copilot harness (preview), and toolbox skills are MCP resources, which the Responses MCP tool doesn't read. The hook therefore compiles each agent's pinned skill versions into its instructions. For Customer 360 that is about 3.4K tokens per call, a static prefix that prompt caching absorbs. Switch to `SKILLS_MODE=native` when the harness is available.
 
 ---
 

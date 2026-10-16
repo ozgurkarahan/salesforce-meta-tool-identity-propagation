@@ -14,6 +14,6 @@ done < <(azd env get-values 2>/dev/null | sed 's/^//' | tr -d '"')
 echo "Installing Python dependencies..."
 pip install --quiet -r requirements.txt
 
-# Run the post-provision script (non-fatal — agent creation may need portal activation)
+# Run the post-provision script (skills/agent/publish failures fail the hook; Teams catalog is non-fatal)
 echo "Running post-provision script..."
 python hooks/postprovision.py 

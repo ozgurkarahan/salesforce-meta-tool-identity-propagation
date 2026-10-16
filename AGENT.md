@@ -6,7 +6,7 @@ This file provides guidance to code agents when working with this repository.
 
 **Salesforce MCP OBO** — On-Behalf-Of (JWT Bearer) identity propagation for Salesforce MCP. User authenticates once to Azure AD; APIM exchanges the Azure AD token for a Salesforce token server-side via JWT Bearer flow. No Salesforce consent required. True OBO.
 
-**Status:** v2 — OAuth2 identity passthrough (2026-07-29). OBO flow **verified end-to-end**; SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration.
+**Status:** v3 is deployed to `sf-mcp-obo` from `feat/v3-skills-toolbox` (2026-10-16; salesforce-assistant v31, customer360-assistant v23, post-route E2E 7/7, Teams smoke passed): Foundry skills, lean prompts, no agent memory, staged publish, and both agents in Teams. v2 is live: OAuth2 identity passthrough (2026-07-29). The OBO flow is **verified end-to-end**, and SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration and the v3 notes.
 
 ## Architecture
 
@@ -88,23 +88,36 @@ The **customer360-assistant** connects to both Salesforce (CRM) and ServiceNow (
 ### Architecture
 
 ```
-Customer 360 Agent (AI Foundry)
-  ├── salesforce_mcp (7 tools) → salesforce-obo connection → APIM → SF MCP Server
-  ├── servicenow_mcp (3 tools) → servicenow-obo connection → APIM → SN MCP Server
-  └── MemorySearchTool (project-memory store, per-user scope)
+Customer 360 Agent (AI Foundry, prompt agent)
+  ├── C360_TOOLS_MODE=direct (default)
+  │     ├── salesforce_mcp (7 tools) → salesforce-obo-oauth2 → APIM → SF MCP Server
+  │     └── servicenow_mcp (3 tools) → servicenow-obo-oauth2 → APIM → SN MCP Server
+  ├── C360_TOOLS_MODE=toolbox
+  │     └── c360_toolbox → Foundry Toolbox customer360-toolbox (version-pinned /mcp)
+  │           ├── salesforce_mcp  (calls arrive as salesforce_mcp___<tool>)
+  │           ├── servicenow_mcp  (servicenow_mcp___<tool>)
+  │           └── 6 skills as MCP resources (for MCP clients that read resources)
+  └── Skills: exact Foundry skill versions compiled into the instructions (SKILLS_MODE=inline)
 ```
 
 Both MCP tools use OBO identity propagation — the user's Azure AD token flows through to each backend system via APIM JWT Bearer exchange.
 
+### Skills (v3)
+
+`skills/<name>/SKILL.md` is the source of truth. `ensure_skills()` in the postprovision hook uploads a new Foundry skill version only when the content changes (text is normalized to LF). The agents pin exact versions: `salesforce-assistant` uses `salesforce-crm`, and `customer360-assistant` uses all six skills.
+
+Prompt agents **cannot load skills at runtime** on this platform yet (spike 2026-10-14):
+- `PromptAgentDefinition.skills` without a harness is accepted but inert, and `GitHubCopilotHarness` is `forbidden` on this subscription.
+- Toolbox skills are exposed as MCP **resources** (`skill://<name>/SKILL.md`, SEP-2640), and the Responses MCP tool only consumes `tools/list`.
+
+So `SKILLS_MODE=inline` (the default) compiles the exact versions into the instructions. `SKILLS_MODE=native` switches to `SkillReference` plus the harness once it is enabled.
+
 ### Token Optimization
 
-System instructions are trimmed to ~437 tokens (44% reduction from initial 782). Key design choices:
-- Explicit "always fetch fresh data" rule prevents memory-only answers
-- Removed Tool Routing section (tool names are self-descriptive)
-- Trimmed Correlation Patterns to 2 proven patterns (company name + keywords)
-- SF `soql_query` default `max_records` reduced from 2000 to 100 (cap 500)
-- E2E test includes 429 retry with 30s backoff and 15s inter-turn pacing
-- Typical 6-turn session: ~124K tokens (25% below baseline)
+The base prompts are lean: about 85 tokens for SF and 128 for C360, versus 585 and 621 in v2, measured with the model's tokenizer. With the skills compiled in, they are about 897 and 3,403 tokens. That is a static prefix, so prompt caching absorbs most of it.
+- The explicit "always fetch fresh data" rule stays in the base prompt
+- SF `soql_query` default `max_records` is 100 (cap 500)
+- The E2E script includes 429 retries with backoff and token-aware inter-turn pacing
 
 ### Prerequisites
 
@@ -130,10 +143,12 @@ See `docs/DEMO_DATA_SETUP.md` for details, `docs/TEST_PROMPTS_360.md` for test s
 ### E2E Test
 
 ```bash
-python scripts/test_e2e_customer360.py
+python scripts/test_e2e_customer360.py                          # latest agent version
+python scripts/test_e2e_customer360.py --path version --version <N>   # exact version, pre-route
+python scripts/test_e2e_customer360.py --path app               # routed Agent Application, post-route
 ```
 
-Runs 6 progressive scenarios, validates both MCP tools are called per turn, reports token usage. Handles 429 rate limits with retry backoff. See `.ai/e2e-results-history.md` for optimization progression.
+The script runs one or more turns per skill plus a write-guard turn. It attributes every MCP call to Salesforce or ServiceNow (direct or toolbox names), reports token usage and exits non-zero on failure. Application-scoped Responses are stateless (no `previous_response_id`). See `.ai/e2e-results-history.md` for the optimization history.
 
 ---
 
@@ -159,8 +174,14 @@ azd up
 | `SF_JWT_BEARER_CERT_THUMBPRINT` | Auto | Auto-set by postprovision hook from KV cert |
 | `SF_JWT_BEARER_CERT_NAME` | No | Key Vault certificate name (default: `sf-jwt-bearer`) |
 | `IDENTITY_CLAIM_NAME` | No | JWT claim for user identity (default: `oid`) |
-| `AGENT_BOT_MSA_APP_ID` | Auto | Foundry-managed identity clientId (auto-set by postprovision Step 5) |
-| `AGENT_BOT_NAME` | Auto | Bot Service resource name (auto-set by postprovision Step 7) |
+| `AGENT_BOT_MSA_APP_ID` | Auto | salesforce-assistant Agent Application identity clientId (Bot Service msaAppId) |
+| `AGENT_BOT_NAME` | Auto | salesforce-assistant Bot Service name (adopted or created) |
+| `C360_BOT_MSA_APP_ID` / `C360_BOT_NAME` | Auto | Same for customer360-assistant |
+| `SF_*` / `C360_AGENT_VERSION`, `*_DEPLOYMENT_ID`, `*_PREV_DEPLOYMENT_ID`, `*_PREV_AGENT_VERSION` | Auto | Staged publish state; `--rollback` routes back to `*_PREV_DEPLOYMENT_ID` |
+| `C360_TOOLS_MODE` | No | `direct` (default) or `toolbox` |
+| `C360_TOOLBOX_NAME` | No | Toolbox name for toolbox mode (default `customer360-toolbox`) |
+| `SKILLS_MODE` | No | `inline` (default) or `native` (needs the GitHub Copilot harness) |
+| `AGENT_MODEL` | No | Model deployment for both agents (default `gpt-5.4`) |
 | `TEAMS_APP_DEVELOPER_NAME` | For Teams | Developer name in Teams manifest |
 | `TEAMS_APP_PRIVACY_URL` | For Teams | Privacy URL in Teams manifest |
 | `TEAMS_APP_TERMS_URL` | For Teams | Terms of use URL in Teams manifest |
@@ -192,12 +213,14 @@ azd up
   - Tool panel sidebar (waterfall timeline, stats, export)
   - Debug panel (App Insights log tail + instant local logs)
   - Markdown rendering (marked.js, bundled locally)
-  - Memory search visibility (Foundry MemorySearchTool results)
+  - OAuth consent cards (one sign-in per user per connected system)
   - Teams Bot Framework endpoint (`POST /api/messages`)
 - `src/shared/foundry_helpers.py` — shared agent call helpers (multi-agent: accepts `agent_name` + `project_endpoint`)
 
 **Hooks & Scripts:**
-- `hooks/postprovision.py` — Steps 0-8: cert upload, Entra app, Foundry agent, OBO connection, Agent Application, Agent Deployment, Bot Service bootstrap, Teams org catalog
+- `hooks/postprovision.py` — certs, Entra app, OBO connection, chat-app settings, then (fatal) skills, agents, per-agent Agent Application + staged publish, Bot Service, Teams org catalog (non-fatal). `--rollback` restores the previous routes
+- `skills/<name>/SKILL.md` — the six v3 skills (source of truth for Foundry skill versions)
+- `scripts/spike_toolbox_identity.py` — v3 go/no-go spike (toolbox identity, skills); sanitized evidence in `.spike/` (gitignored)
 - `assets/teams/` — Teams app icons (color.png 192x192, outline.png 32x32)
 - `scripts/sf_utils.py` — Shared SF/CLI primitives (run, SOQL, metadata deploy, REST helpers)
 - `scripts/setup-sf-org.py` — Complete 5-step SF org setup orchestrator (Connected App, SSO, Demo User, Service Account, Federation IDs)
@@ -235,9 +258,10 @@ After setup, import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bea
 3. `SF_JWT_BEARER_CERT_THUMBPRINT` auto-set by postprovision hook (or set manually)
 
 ### Teams Publishing Prerequisites
-1. `AppCatalog.ReadWrite.All` Graph API permission on deployer identity (with admin consent)
+1. `AppCatalog.ReadWrite.All` on the deployer's Graph token (the default `az login` token lacks it; without it the Teams step only warns)
 2. Set: `TEAMS_APP_DEVELOPER_NAME`, `TEAMS_APP_PRIVACY_URL`, `TEAMS_APP_TERMS_URL`
-3. First `azd up` creates Agent Application + bootstraps Bot Service; second `azd up` lets Bicep manage the Bot Service
+3. The first `azd up` creates the Agent Applications and bootstraps or adopts each Bot Service (an existing bot with the same msaAppId is adopted); the second `azd up` lets Bicep manage both bots
+4. Manual smoke checklist: `docs/teams-integration.md` → *v3 Teams smoke test*
 
 ### IdP Flexibility
 

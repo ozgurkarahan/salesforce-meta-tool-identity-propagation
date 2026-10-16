@@ -47,24 +47,59 @@ def create_foundry_client(access_token: str, project_endpoint: str = None):
     return AIProjectClient(endpoint=endpoint, credential=credential)
 
 
+# MCP server label -> backend system. Direct MCP tools use these labels as
+# server_label; through a Foundry Toolbox the call arrives as
+# "<server_label>___<tool>" (triple underscore) under the toolbox's own label.
+MCP_SYSTEMS = {
+    "salesforce_mcp": "salesforce",
+    "servicenow_mcp": "servicenow",
+}
+
+
+def tool_system(server_label: str, name: str):
+    """Return (system, bare_tool_name); unknown labels map to 'unknown'."""
+    label = server_label or ""
+    tool = name or ""
+    if "___" in tool:
+        label, tool = tool.split("___", 1)
+    return MCP_SYSTEMS.get(label, "unknown"), tool
+
+
 def parse_output_items(output_items, request_id: str = ""):
     """Parse Responses API output items into a structured result.
 
     Returns:
-        dict with keys: type, text, approval_required, approval_ids
+        dict with keys: type, text, approval_required, approval_ids,
+                        consent_required, consent, tool_calls
     """
     result = {
         "type": "text",
         "text": "",
         "approval_required": False,
         "approval_ids": [],
+        "consent_required": False,
+        "consent": [],
         "tool_calls": [],
     }
 
     for item in output_items:
         item_type = getattr(item, "type", "unknown")
 
-        if item_type == "mcp_approval_request":
+        if item_type == "oauth_consent_request":
+            # First call per user per OAuth2 connection: the user must sign in once,
+            # then the same message is re-sent with previous_response_id.
+            result["type"] = "consent_required"
+            result["consent_required"] = True
+            result["consent"].append({
+                "server_label": getattr(item, "server_label", "") or "",
+                "consent_link": getattr(item, "consent_link", "") or "",
+            })
+            logger.info(
+                "oauth_consent_requested request_id=%s server=%s",
+                request_id, getattr(item, "server_label", ""),
+            )
+
+        elif item_type == "mcp_approval_request":
             result["type"] = "approval_required"
             result["approval_required"] = True
             tool_name = getattr(item, "name", "")
@@ -83,61 +118,24 @@ def parse_output_items(output_items, request_id: str = ""):
             )
 
         elif item_type == "mcp_call":
-            tool_name = getattr(item, "name", "")
+            server_label = getattr(item, "server_label", "") or ""
+            raw_name = getattr(item, "name", "") or ""
+            system, tool_name = tool_system(server_label, raw_name)
             tool_args = getattr(item, "arguments", {})
             tool_error = getattr(item, "error", None)
             logger.info(
-                "tool_call request_id=%s tool=%s args=%s error=%s",
-                request_id, tool_name,
+                "tool_call request_id=%s system=%s tool=%s server=%s args=%s error=%s",
+                request_id, system, tool_name, server_label,
                 str(tool_args)[:300],
                 str(tool_error)[:200] if tool_error else None,
             )
             result["tool_calls"].append({
                 "name": tool_name,
+                "system": system,
+                "server_label": server_label,
                 "arguments": tool_args,
                 "error": str(tool_error) if tool_error else None,
                 "output": getattr(item, "output", None),
-            })
-
-        elif item_type == "memory_search_call":
-            # Memory data lives in model_extra (Pydantic extra fields)
-            extra = getattr(item, "model_extra", {}) or {}
-            memories = extra.get("memories", []) or []
-            status = getattr(item, "status", "")
-            mem_id = getattr(item, "id", "")
-
-            # Format memory results for display
-            mem_entries = []
-            for mem in memories:
-                if isinstance(mem, dict):
-                    mem_entries.append(mem)
-                elif hasattr(mem, "model_dump"):
-                    mem_entries.append(mem.model_dump())
-                else:
-                    mem_entries.append({"text": str(mem)[:300]})
-
-            mem_count = len(mem_entries)
-            mem_output = ""
-            if mem_entries:
-                lines = []
-                for m in mem_entries[:10]:
-                    text = m.get("text", m.get("content", m.get("summary", "")))
-                    mtype = m.get("type", "")
-                    if text:
-                        lines.append(f"[{mtype}] {str(text)[:200]}" if mtype else str(text)[:200])
-                    else:
-                        lines.append(str(m)[:200])
-                mem_output = "\n".join(lines)
-
-            logger.info(
-                "memory_call request_id=%s id=%s status=%s results=%d",
-                request_id, mem_id, status, mem_count,
-            )
-            result["tool_calls"].append({
-                "name": "memory_search",
-                "arguments": {"status": status, "id": mem_id},
-                "error": None,
-                "output": mem_output or f"{mem_count} memory results",
             })
 
         elif item_type == "message":

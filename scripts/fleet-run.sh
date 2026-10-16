@@ -69,7 +69,7 @@ for ns in "${REQUIRED_PROVIDERS[@]}"; do
   fi
   echo "  provider $ns: $state"
 done
-# Quota: APIM StandardV2 + CognitiveServices gpt-5.4 + text-embedding-3-small
+# Quota: APIM StandardV2 + CognitiveServices gpt-5.4
 az rest --method GET --subscription "$SUBSCRIPTION" \
   --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/providers/Microsoft.CognitiveServices/locations/$LOCATION/models?api-version=2023-10-01-preview" \
   > "$ART/cognitive-models.json" || true
