@@ -195,3 +195,28 @@
 **Teams smoke (manual, 2026-10-16 23:13–23:15Z):** Customer-360-Agent 1:1 chat plus the Salesforce Assistant app, run by the user. SF Login History shows only the signed-in user plus `svc.mcp.obo`. APIM shows 0 errors on both APIs. The write guard held: Acme Corp's Industry is unchanged (last modified 2026-03-18).
 
 ---
+
+## Run 10 — v3 SF MCP server live (mcp<2 fix)
+**Date:** 2026-10-17
+**Change:** `ca-sf-mcp` redeployed (`azd deploy salesforce-mcp`, revision `ca-sf-mcp--azd-1792241702`) with `mcp>=1.9.0,<2`. The 2026-10-16 image crash-looped on `mcp` 2.x, so Run 9 actually ran on the March image (`soql_query` default 2,000 records, cap 50,000). This run uses the repo code: default 100, cap 500, describe cache 60 min. Agents unchanged (customer360-assistant v23).
+**Target:** `--path app` (published Agent Application = Teams path)
+**Result:** 7/7 behavioural checks passed
+
+| Turn | Input | Output | Total | Cached | Tools | Servers | Label |
+|------|------:|-------:|------:|-------:|------:|---------|-------|
+| 1 | 8,007 | 945 | 8,952 | 5,632 | 4 | SF+SN | Unified lookup (customer360-correlation) |
+| 2 | 14,105 | 1,362 | 15,467 | 5,632 | 5 | SF+SN | Cross-system correlation |
+| 3 | 6,601 | 676 | 7,277 | 5,632 | 3 | SF+SN | Meeting prep |
+| 4 | 12,050 | 1,342 | 13,392 | 5,632 | 5 | SF+SN | Revenue at risk |
+| 5 | 12,873 | 1,375 | 14,248 | 5,632 | 3 | SF+SN | Change risk |
+| 6 | 13,449 | 746 | 14,195 | 5,632 | 2 | SF+SN | Escalation (read-only) |
+| 7 | 6,082 | 253 | 6,335 | 5,632 | 1 | SF | Write guard: asked for confirmation, no write |
+| **TOTAL** | **73,167** | **6,699** | **79,866** | **39,424** | **23** | **7/7** | |
+
+**vs Run 9:** 80K vs 94K total tokens. Turn-level variance is high, because the model chooses the tool depth. A pre-deploy run the same morning on the March image reached 171K, of which 92K came from one `describe_object mode=full` call in the write-guard turn.
+
+**Web-chat path (`--path reference`, `--only 4,7`):** 2/2 passed (26K tokens). **SF Assistant (application endpoint):** `whoami` returned the signed-in user's own SF username.
+
+**Live checks:** the new revision is the only one serving (`latestReady == latest`) and logged a clean startup. Live `tools/list` returns 7 tools with `max_records` default 100. APIM after the deploy shows SF 122×200 and SN 113×200. Each system also had 2×401 `TokenExpired`, the stale-token call before re-consent, and 1×400 from the MCP server on the first POST after reconnect, which the client re-initializes about 1 s later (same pattern on the March image).
+
+---
