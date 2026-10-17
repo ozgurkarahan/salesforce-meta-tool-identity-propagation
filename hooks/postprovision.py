@@ -1365,6 +1365,21 @@ def publish_teams_app_org_wide(cfg, msa_app_id):
         return
     apps = lookup.get("value", []) if isinstance(lookup, dict) else []
     existing = apps[0] if apps else None
+    if not existing:
+        # An app uploaded outside the hook (Teams admin center, Foundry portal) keeps its own
+        # externalId and manifest. Publishing ours would add a duplicate app for the same bot.
+        org_apps = run(
+            'az rest --method GET --url "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps'
+            '?%24filter=distributionMethod eq \'organization\''
+            '&%24expand=appDefinitions(%24expand=bot)"',
+            parse_json=True,
+        ) or {}
+        for app in org_apps.get("value", []):
+            if any((d.get("bot") or {}).get("id") == msa_app_id
+                   for d in app.get("appDefinitions") or []):
+                print(f"  Teams app '{app.get('displayName')}' ({app['id']}) already serves this "
+                      "bot — adopting it as is (not published by the hook, so not updated)")
+                return
     version = _next_manifest_version(existing)
 
     manifest = {

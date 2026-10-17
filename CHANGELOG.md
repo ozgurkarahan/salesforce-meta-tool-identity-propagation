@@ -102,6 +102,10 @@ All notable changes to this project are documented here. The format follows
   in `python:3.12-slim` with mcp 1.30.0 and takes effect at the next
   `azd deploy salesforce-mcp`. After a deploy, check `latestReadyRevisionName ==
   latestRevisionName`: `/health` alone can be answered by the old revision.
+- **Teams publish:** the hook no longer adds a duplicate org-catalog app when an app
+  for the same bot was uploaded outside the hook, which gives it a different
+  `externalId`. It adopts that app as is. This was checked against the live catalog:
+  both apps were adopted and nothing was written.
 
 ## [2.0.0] - 2026-07-29
 

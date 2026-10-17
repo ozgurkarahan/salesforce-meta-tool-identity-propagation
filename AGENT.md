@@ -262,6 +262,7 @@ After setup, import PFX (private key + cert) into Azure Key Vault as `sf-jwt-bea
 2. Set: `TEAMS_APP_DEVELOPER_NAME`, `TEAMS_APP_PRIVACY_URL`, `TEAMS_APP_TERMS_URL`
 3. The first `azd up` creates the Agent Applications and bootstraps or adopts each Bot Service (an existing bot with the same msaAppId is adopted); the second `azd up` lets Bicep manage both bots
 4. Manual smoke checklist: `docs/teams-integration.md` → *v3 Teams smoke test*
+5. An org-catalog app that already serves the same bot, uploaded in the Teams admin center or published from Foundry, is adopted as is: the hook neither updates it nor adds a duplicate. Both live apps (v2.0.0) are adopted this way
 
 ### IdP Flexibility
 
