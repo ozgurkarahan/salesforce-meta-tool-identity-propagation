@@ -94,6 +94,14 @@ All notable changes to this project are documented here. The format follows
   `SERVICE_CHAT_APP_IMAGE_NAME` / `SERVICE_SALESFORCE_MCP_IMAGE_NAME` (written by
   `azd deploy`), falling back to helloworld only on a fresh environment. Previously a
   provision-only run took the demo down with ingress timeouts (incident 2026-07-28).
+- **Salesforce MCP server:** `mcp` is pinned to `>=1.9.0,<2`. The v3 deploy
+  (2026-10-16) built the image with `mcp` 2.x, which removed `mcp.server.fastmcp`, so
+  the new `ca-sf-mcp` revision crash-looped on import. Container Apps kept serving the
+  previous revision (March image), so the demo stayed up, but the newer server code
+  (`soql_query` default 100 records, cap 500) never went live. The fix was checked
+  in `python:3.12-slim` with mcp 1.30.0 and takes effect at the next
+  `azd deploy salesforce-mcp`. After a deploy, check `latestReadyRevisionName ==
+  latestRevisionName`: `/health` alone can be answered by the old revision.
 
 ## [2.0.0] - 2026-07-29
 
