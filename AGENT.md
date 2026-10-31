@@ -8,6 +8,16 @@ This file provides guidance to code agents when working with this repository.
 
 **Status:** v3 is deployed to `sf-mcp-obo` from `feat/v3-skills-toolbox` (2026-10-16; salesforce-assistant v31, customer360-assistant v23, post-route E2E 7/7, Teams smoke passed): Foundry skills, lean prompts, no agent memory, staged publish, and both agents in Teams. The SF MCP server's v3 image went live on 2026-10-17 after the `mcp<2` fix (E2E run 10: 7/7). v2 is live: OAuth2 identity passthrough (2026-07-29). The OBO flow is **verified end-to-end**, and SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration and the v3 notes.
 
+**Managed Harness staging (2026-10-31):** `staging/v3/azure.yaml` separately defines
+`salesforce-assistant-v3` and `customer360-assistant-v3`, using
+`microsoft_copilot_preview`, the existing `gpt-5.4-pro` deployment, authenticated
+version-pinned toolboxes and top-level native skill pins. This does not change the
+current agents, the root postprovision workflow, or app/Teams routes. See
+`docs/v3-managed-harness-staging.md` before deploying; do not enable production
+`SKILLS_MODE=native` or `C360_TOOLS_MODE=toolbox` as part of this staging work.
+Both staged agents/toolboxes are deployed at v1 and the live contract suite passes
+11/11 checks; current-user backend identity remains gated on toolbox OAuth consent.
+
 ## Architecture
 
 ### Multi-Agent Headless Chat App
@@ -307,6 +317,18 @@ python scripts/setup-sf-org.py --org <alias> --email <email> --cleanup
 ```
 
 ---
+
+## How to Verify
+
+- Managed Harness staging contract: `python scripts/test_v3_staging.py`.
+- Published staging definitions, toolbox authentication and pinned skill content:
+  `python scripts/test_v3_staging.py --live` (read-only, current Azure CLI account).
+- Staging deploy, exact published definitions, skill content and current-user
+  read-only invocation: `docs/v3-managed-harness-staging.md`.
+- Existing Customer 360 runtime: `python scripts/test_e2e_customer360.py`
+  (requires the current user's consent; not a staging deployment command).
+- A successful deployment alone is not identity verification. Report pending
+  consent, account mismatch or missing backend tool evidence as an open gate.
 
 ## Workflow Rules
 

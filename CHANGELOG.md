@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **V3 Managed Harness staging:** isolated `staging/v3/azure.yaml` with additive
+  `salesforce-assistant-v3` and `customer360-assistant-v3` prompt agents using
+  `microsoft_copilot_preview` and the existing `gpt-5.4-pro` model. Separate
+  Salesforce-only and combined toolboxes retain the existing OAuth2 connections
+  and exact tool allowlists; all tool calls require approval. Existing skill
+  versions are pinned on the agents, not the toolboxes. Production agents,
+  postprovision behavior and app/Teams routing are unchanged. Includes offline
+  and live published-resource contract checks and a scoped deployment/verification
+  runbook.
+
 - **v3 — Foundry skills:** six versioned skills in `skills/<name>/SKILL.md`:
   `salesforce-crm`, `servicenow-itsm`, `customer360-correlation`, `revenue-at-risk`,
   `meeting-prep` and `change-risk`. The postprovision hook (`ensure_skills`) uploads
