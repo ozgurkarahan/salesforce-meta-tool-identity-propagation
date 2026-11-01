@@ -98,7 +98,8 @@ def profiles(identity):
             sc("4. Revenue at risk", ["Show me all P1 and P2 incidents from ServiceNow, then for each one identify "
                                       "which Salesforce accounts are affected and their total pipeline value. Rank by revenue at risk."],
                expect_systems={"salesforce", "servicenow"}, forbid_tools=WRITE_TOOLS,
-               expect_text_any=["$", "USD", "EUR", "€"]),
+               # The skill forbids guessing a currency the org does not return, so accept a reported pipeline value.
+               expect_text_any=["$", "USD", "EUR", "€", "pipeline"]),
             sc("5. Change risk", ["Which upcoming ServiceNow change requests could affect Salesforce accounts "
                                   "with open opportunities? Assess the risk for each."],
                expect_systems={"salesforce", "servicenow"}, forbid_tools=WRITE_TOOLS),

@@ -242,6 +242,22 @@ APIM gateway logs (22:44–23:33 UTC) for the run window: `salesforce-mcp-obo`
 * Transient platform errors were observed: `500 server_error`,
   `500 session_creation_failed`, and one empty-message `discover` tool error.
   The agents recovered on a fresh conversation.
+  After re-consent, the final pass also hit one `424 proxy_timeout` (agent
+  container did not respond) and one `Cannot send a request, as the client has
+  been closed` tool error; each scenario passed on a single rerun.
 * In harness output every MCP call reports `server_label = managed_tools`; the
   backend is derived from the tool name (`<server>___<tool>` or the disjoint
   Salesforce/ServiceNow tool sets).
+
+### Clean final pass after re-consent (2026-11-01)
+
+Fresh delegated consent for both connections, then one full run per agent
+(single reruns only for the platform-transient errors noted above):
+
+| Agent | Result | Identity evidence |
+|---|---|---|
+| `servicenow-assistant-v3` | **4/4 PASS** in one run | work note attributed to `ozgurkarahan` |
+| `salesforce-assistant-v3` | **4/4 PASS** (scenario 1 rerun after `424 proxy_timeout`) | `whoami` = user's Salesforce username; Task `CreatedBy.Username` = the user, deleted, final count 0 |
+| `customer360-assistant-v3` | **8/8 PASS** (scenario 4 rerun after a transient tool error) | toolbox `c360_toolbox` reaches both `salesforce_mcp` and `servicenow_mcp` as the signed-in user |
+
+Every test conversation and test record created by the runner was deleted.
