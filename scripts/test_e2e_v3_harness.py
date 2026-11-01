@@ -163,7 +163,12 @@ def tool_parts(name, server_label=None):
     return system, tool
 
 
-def run_turn(client, conv, text, scenario, log):
+def served_version(resp):
+    ref = resp.model_dump().get("agent_reference") or {}
+    return ref.get("version")
+
+
+def run_turn(client, conv, text, scenario, log, extra_body=None):
     """Send one user turn; loop through tool approvals. Returns (final_text, items, gate)."""
     items, request = [], text
     for _ in range(25):
@@ -171,7 +176,7 @@ def run_turn(client, conv, text, scenario, log):
         resp = None
         for attempt in range(4):
             try:
-                resp = client.responses.create(input=request, conversation=conv, timeout=900)
+                resp = client.responses.create(input=request, conversation=conv, timeout=900, extra_body=extra_body)
                 break
             except Exception as e:  # noqa: BLE001
                 if "429" in str(e) and attempt < 3:
@@ -181,6 +186,7 @@ def run_turn(client, conv, text, scenario, log):
         out = [o.model_dump() if hasattr(o, "model_dump") else dict(o) for o in (resp.output or [])]
         items += out
         log.append({"elapsed_s": round(time.monotonic() - t0, 1), "status": resp.status,
+                    "served_version": served_version(resp),
                     "types": [o.get("type") for o in out],
                     "usage": (resp.usage.model_dump() if getattr(resp, "usage", None) else None)})
         for o in out:
@@ -204,6 +210,8 @@ def main():
     p.add_argument("--identity", default="ozgur", help="substring of the signed-in user's backend username")
     p.add_argument("--only", help="comma-separated scenario numbers")
     p.add_argument("--out", help="write sanitized JSON results here")
+    p.add_argument("--agent-version", help="test this exact version via the project endpoint instead of the "
+                                           "agent endpoint (which serves the pinned version)")
     args = p.parse_args()
 
     from azure.ai.projects import AIProjectClient
@@ -213,12 +221,20 @@ def main():
     if args.only:
         wanted = {s.strip() for s in args.only.split(",")}
         scenarios = [s for s in scenarios if s["label"].split(".")[0] in wanted]
-    print(f"Agent: {agent}  tag: {TAG}  scenarios: {len(scenarios)}", flush=True)
+    print(f"Agent: {agent}  version: {args.agent_version or 'pinned endpoint'}  tag: {TAG}  scenarios: {len(scenarios)}",
+          flush=True)
+
+    client_kwargs = {"agent_name": agent, "max_retries": 0, "timeout": 900,
+                     "default_headers": {"Foundry-Features": "MicrosoftCopilot=V1Preview"}}
+    # Harness agents are only callable via the agent endpoint, which serves the pinned
+    # version; an agent_reference with an explicit version overrides it per request.
+    extra_body = None
+    if args.agent_version:
+        extra_body = {"agent_reference": {"type": "agent_reference", "name": agent, "version": args.agent_version}}
 
     results, conversations = [], []
     with AIProjectClient(endpoint=PROJECT, credential=AzureCliCredential(), allow_preview=True) as project:
-        with project.get_openai_client(agent_name=agent, max_retries=0, timeout=900,
-                                       default_headers={"Foundry-Features": "MicrosoftCopilot=V1Preview"}) as client:
+        with project.get_openai_client(**client_kwargs) as client:
             try:
                 for s in scenarios:
                     conv = client.conversations.create().id
@@ -227,7 +243,7 @@ def main():
                     log, items, texts, gates = [], [], [], []
                     try:
                         for turn in s["turns"]:
-                            text, turn_items, gate = run_turn(client, conv, turn, s, log)
+                            text, turn_items, gate = run_turn(client, conv, turn, s, log, extra_body)
                             items += turn_items
                             texts.append(text)
                             gates.append(gate)
@@ -245,6 +261,10 @@ def main():
                     errors = [str(c.get("error"))[:300] for c in calls if c.get("error")]
                     denied = [a.get("name") for a in items if a.get("type") == "mcp_approval_request" and a.get("_decision") == "deny"]
                     problems = [g for g in gates if g != "none"]
+                    if args.agent_version:
+                        served = {t.get("served_version") for t in log} - {None}
+                        if served != {args.agent_version}:
+                            problems.append(f"served version {sorted(served)} != requested {args.agent_version}")
                     if s["expect_tools"] - tools:
                         problems.append(f"missing tools {sorted(s['expect_tools'] - tools)}")
                     if s["expect_systems"] - systems:
@@ -290,7 +310,8 @@ def main():
     passed = sum(r["status"] == "PASS" for r in results)
     print(f"\n{agent}: {passed}/{len(results)} PASS")
     if args.out:
-        Path(args.out).write_text(json.dumps({"agent": agent, "tag": TAG, "passed": passed, "total": len(results),
+        Path(args.out).write_text(json.dumps({"agent": agent, "agent_version": args.agent_version or "pinned", "tag": TAG,
+                                              "passed": passed, "total": len(results),
                                               "conversations_deleted": deleted, "results": results}, indent=2),
                                   encoding="utf-8")
     sys.exit(0 if passed == len(results) else 1)

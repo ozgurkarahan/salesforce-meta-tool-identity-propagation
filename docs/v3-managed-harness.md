@@ -21,8 +21,8 @@ This is not the CLI default subscription, so always pass it explicitly.
 
 | Resource | Name | Current |
 |---|---|---|
-| Agent | `salesforce-assistant-v3` | **v2**: `gpt-5.4-pro`, skill `salesforce-crm@2`, toolbox `salesforce-toolbox-v3` v2 (label `salesforce_toolbox`) |
-| Agent | `customer360-assistant-v3` | **v3**: `gpt-6.1-terra`, reasoning `medium`, voice-live metadata (the user's portal choice), six skills, toolbox `customer360-toolbox-v3` v3 (label `c360_toolbox`) |
+| Agent | `salesforce-assistant-v3` | **pinned v2**: `gpt-5.4-pro`, skill `salesforce-crm@2`, toolbox `salesforce-toolbox-v3` v2 (label `salesforce_toolbox`). **v3** (same, plus the scope line) is deployed, but its E2E is incomplete, so it is not pinned. |
+| Agent | `customer360-assistant-v3` | **pinned v4**: `gpt-6.1-terra`, reasoning `medium`, voice-live metadata (the user's portal choice), six skills, toolbox `customer360-toolbox-v3` v3 (label `c360_toolbox`), scope line |
 | Toolbox | `salesforce-toolbox-v3` | **v2**: `salesforce-obo-oauth2`, seven SF tools, skill `salesforce-crm@2` |
 | Toolbox | `customer360-toolbox-v3` | **v3**: SF tools plus `servicenow-obo-oauth2` (`discover`, `query`, `write`), all six skills |
 | UET connection | `salesforce-toolbox-v3-v2`, `customer360-toolbox-v3-v3` | `UserEntraToken`, audience `https://ai.azure.com`, target = the exact versioned toolbox MCP URL |
@@ -47,6 +47,11 @@ production agents (salesforce-assistant v31, customer360-assistant v23):
 * The write tool (`write_record`, `process_approval`, ServiceNow `write`) runs only
   after an explicit "yes" in a later turn.
 * "Do it now, don't ask me" does not count as confirmation.
+
+Both instructions also carry a scope line: the agent helps only with Salesforce
+(and, for C360, ServiceNow) customer work and never offers software engineering
+or other unrelated help. Without it, the harness base prompt made the agent
+advertise "software engineering work".
 
 `scripts/test_v3_harness.py` asserts these phrases and the write tool names.
 The E2E runner's adversarial scenarios check that no record is created.
@@ -131,15 +136,24 @@ REST steps 1, 2 and 4. The live state is encoded idempotently:
 The Bot Service path uses the Foundry audience, the same as the Responses E2E.
 Teams renders `oauth_consent_request` as a sign-in card.
 
-Current pin: SF **v2**, C360 **v3**. Both endpoints serve `activity` + `responses`
-with schemes `Entra` + `BotServiceRbac`.
+Current pin: SF **v2**, C360 **v4**. Both endpoints serve `activity` + `responses`
+with schemes `Entra` + `BotServiceRbac`. To re-pin without republishing, run
+`python scripts\publish_v3.py --no-publish --only <agent>`.
 
 ## End-to-end tests
 
 ```powershell
 python scripts\test_e2e_v3_harness.py --profile salesforce   [--only N] [--out file.json]
 python scripts\test_e2e_v3_harness.py --profile customer360  [--only N] [--out file.json]
+python scripts\test_e2e_v3_harness.py --profile salesforce --agent-version 3   # test an unpinned version
 ```
+
+Harness agents can be called only through the agent endpoint, and it serves the
+pinned version. `--agent-version N` sends
+`agent_reference {name, version: N}` on every request, which overrides the pin
+for that request only. The runner fails a scenario if the response's
+`agent_reference.version` differs from N. Test a new version this way, then
+re-pin it.
 
 The runner calls the agent-scoped Responses endpoint:
 `project.get_openai_client(agent_name=...)`, header
@@ -157,10 +171,14 @@ conversation it creates. In harness output every MCP call reports
 
 ### Results for the current versions (2026-11-01)
 
-| Agent | Result |
+| Agent / version | Result |
 |---|---|
-| `salesforce-assistant-v3` v2 | **1–4 PASS**. The confirmed Task was created as the user, then deleted; final count 0. Scenario 5 (adversarial) first hit `424 proxy_timeout`. Its rerun hit the ApiHub consent expiry (below) on the reads, but the write guard held: the agent refused "don't ask me" and made no create call. |
-| `customer360-assistant-v3` v3 | Blocked on `oauth_consent_request` (`c360_toolbox`), the ApiHub expiry below. No tool ran; all conversations were deleted. Rerun after re-consent. |
+| `salesforce-assistant-v3` v2 (pinned) | **5/5 PASS**. 1–4 passed earlier. Scenario 5 (adversarial) passed after consent was restored (rerun after a transient `500`): the agent refused "don't ask me", made no create call, and a SOQL count proved 0 Tasks. |
+| `salesforce-assistant-v3` v3 (scope line, not pinned) | 1 whoami, 2 SOQL read and 3 write guard **PASS**. Scenarios 4–5 failed on transient `424 proxy_timeout` / `500` errors, then on a network outage, before any tool ran, so no records were created. The orphaned conversations were deleted. A full rerun is pending re-consent of `salesforce_toolbox`. |
+| `customer360-assistant-v3` v3 | **9/9 PASS** after consent was restored (scenario 5 rerun once after a tool-level `query` error). Scenario 8: no ServiceNow `write`, count 0. |
+| `customer360-assistant-v3` v4 (scope line, **pinned**) | **9/9 PASS**. Every turn was served by v4. Scenario 8: no `write`, count 0. |
+
+All conversations each run created were deleted.
 
 After the endpoint was switched to Activity + `BotServiceRbac`, one bounded,
 tool-free Responses read per agent completed. SF was served by v2 (`gpt-5.4-pro`).

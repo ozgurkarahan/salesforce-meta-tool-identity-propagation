@@ -63,7 +63,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     ),
     AgentSpec(
         agent="customer360-assistant-v3",
-        version="3",
+        version="4",
         bot="bot-customer360-assistant-v3",
         display_name="Customer 360 Assistant (V3)",
         short_description="Salesforce + ServiceNow customer 360 view.",

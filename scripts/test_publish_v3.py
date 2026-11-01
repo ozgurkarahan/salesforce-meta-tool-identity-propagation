@@ -74,7 +74,7 @@ class TestPlanBuilders(unittest.TestCase):
             {(a.agent, a.version, a.bot, a.display_name) for a in pv.AGENTS},
             {
                 ("salesforce-assistant-v3", "2", "bot-salesforce-assistant-v3", "Salesforce Assistant (V3)"),
-                ("customer360-assistant-v3", "3", "bot-customer360-assistant-v3", "Customer 360 Assistant (V3)"),
+                ("customer360-assistant-v3", "4", "bot-customer360-assistant-v3", "Customer 360 Assistant (V3)"),
             },
         )
 
@@ -163,7 +163,7 @@ class TestPublishFlow(unittest.TestCase):
         self.assertEqual(out["publish"], "planned")
         self.assertEqual(
             out["pin_body"]["agent_endpoint"]["version_selector"]["version_selection_rules"][0]["agent_version"],
-            "3")
+            "4")
 
     def test_publish_failure_raises(self):
         svc = FakeService(live_agent(), publish_status=400, publish_text="bad bot id")

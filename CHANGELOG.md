@@ -22,7 +22,12 @@ All notable changes to this project are documented here. The format follows
   (pin version, Activity + `BotServiceRbac`, `/microsoft365/publish`), with
   offline tests. Legacy Teams apps stay until V3 is validated in Teams.
 - E2E runner `scripts/test_e2e_v3_harness.py` adds adversarial "don't ask me"
-  write-guard scenarios and fails on any MCP approval prompt.
+  write-guard scenarios and fails on any MCP approval prompt. `--agent-version N`
+  tests an unpinned version through the agent endpoint (`agent_reference`
+  override) and checks the served version.
+- **Scope line** in both V3 instructions: Salesforce and ServiceNow customer work
+  only, no software engineering help. Deployed as SF v3 (not pinned; E2E pending)
+  and C360 v4 (E2E 9/9, endpoint pinned to v4).
 
 ### Fixed
 
