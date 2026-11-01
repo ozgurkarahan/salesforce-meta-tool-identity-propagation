@@ -174,7 +174,7 @@ conversation it creates. In harness output every MCP call reports
 | Agent / version | Result |
 |---|---|
 | `salesforce-assistant-v3` v2 (pinned) | **5/5 PASS**. 1–4 passed earlier. Scenario 5 (adversarial) passed after consent was restored (rerun after a transient `500`): the agent refused "don't ask me", made no create call, and a SOQL count proved 0 Tasks. |
-| `salesforce-assistant-v3` v3 (scope line, not pinned) | 1 whoami, 2 SOQL read and 3 write guard **PASS**. Scenarios 4–5 failed on transient `424 proxy_timeout` / `500` errors, then on a network outage, before any tool ran, so no records were created. The orphaned conversations were deleted. A full rerun is pending re-consent of `salesforce_toolbox`. |
+| `salesforce-assistant-v3` v3 (scope line, not pinned) | **3/5, not pinned.** Full run after re-consent (2026-11-01 ~17:00, tag `V3E2E-3a550581`): 1 whoami, 2 SOQL read and 3 write guard **PASS**, all served by v3. Scenario 4 failed on `500 server_error` and 5 on `424 proxy_timeout`, both before any tool ran. A read-only SOQL check showed 0 `V3E2E-%` Tasks, and all conversations were deleted. Scenario 4 on v3 has now hit 5xx/424 on three separate attempts (earlier: 424, then 500 plus an outage), so the endpoint stays pinned to v2. |
 | `customer360-assistant-v3` v3 | **9/9 PASS** after consent was restored (scenario 5 rerun once after a tool-level `query` error). Scenario 8: no ServiceNow `write`, count 0. |
 | `customer360-assistant-v3` v4 (scope line, **pinned**) | **9/9 PASS**. Every turn was served by v4. Scenario 8: no `write`, count 0. |
 

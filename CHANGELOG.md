@@ -26,7 +26,7 @@ All notable changes to this project are documented here. The format follows
   tests an unpinned version through the agent endpoint (`agent_reference`
   override) and checks the served version.
 - **Scope line** in both V3 instructions: Salesforce and ServiceNow customer work
-  only, no software engineering help. Deployed as SF v3 (not pinned; E2E pending)
+  only, no software engineering help. Deployed as SF v3 (E2E 3/5: scenarios 4–5 hit 500/424; not pinned, SF stays on v2)
   and C360 v4 (E2E 9/9, endpoint pinned to v4).
 
 ### Fixed
