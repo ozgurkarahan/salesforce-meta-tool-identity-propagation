@@ -8,6 +8,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **V3 Managed Harness agents are primary:** canonical `agents/azure.yaml`
+  (moved out of `staging/v3/`) with `salesforce-assistant-v3` (v2, `gpt-5.4-pro`)
+  and `customer360-assistant-v3` (v3, `gpt-6.1-terra` + voice-live metadata,
+  reconciled with the user's portal version) on `microsoft_copilot_preview`.
+  Toolboxes `salesforce-toolbox-v3` v2 / `customer360-toolbox-v3` v3 keep per-user
+  OAuth2, use `require_approval: never` (Teams cannot render MCP approval prompts)
+  and carry the agents' skills. The instructions enforce explicit in-chat
+  confirmation before any write.
+- **Teams/M365 publishing via agent endpoint:** `infra/modules/bot-service-v3.bicep`
+  (one Azure Bot per V3 agent, `msaAppId` = agent instance identity, Activity
+  Protocol endpoint, Teams channel) and the idempotent `scripts/publish_v3.py`
+  (pin version, Activity + `BotServiceRbac`, `/microsoft365/publish`), with
+  offline tests. Legacy Teams apps stay until V3 is validated in Teams.
+- E2E runner `scripts/test_e2e_v3_harness.py` adds adversarial "don't ask me"
+  write-guard scenarios and fails on any MCP approval prompt.
+
+### Fixed
+
+- Bot Service Bicep: the Salesforce bot's `developerAppInsightsApplicationId` now
+  matches the live bot (new `appInsightsAppId` monitoring output).
+- Docs: toolbox consent expiry is the known ApiHub refresh-token bug (~60 min),
+  not an unknown cause.
+
+### Removed
+
+- Obsolete cross-subscription migration helpers `scripts/fleet-run.sh`,
+  `fleet-preflight.py`, `finalize-customer360.py`, `verify-migration.py`.
+
+### Added (earlier, unreleased)
+
 - **V3 Managed Harness staging:** isolated `staging/v3/azure.yaml` with additive
   `salesforce-assistant-v3` and `customer360-assistant-v3` prompt agents using
   `microsoft_copilot_preview` and the existing `gpt-5.4-pro` model. Separate

@@ -21,8 +21,8 @@ is not available in managed tenants.
 """
 
 # FLEET_PATCH_V1
-# Auto-applied by fleet-preflight.py to make direct Python invocation work
-# outside the azd hook context (for the finalize-customer360 step).
+# Lets the hook run as plain `python hooks/postprovision.py` outside the azd
+# hook context by loading `azd env get-values` into the environment.
 def _fleet_bootstrap_env():
     import os, subprocess
     if os.environ.get("AZURE_ENV_NAME"):

@@ -146,19 +146,23 @@ deployment in `aiproj-sf-mcp-obo`. The older spike conclusions below describe th
 ordinary prompt / legacy GitHub harness path tested in October, not this new
 Microsoft harness path.
 
-`staging/v3/azure.yaml` is an isolated azd manifest: two new agents, two new
+`agents/azure.yaml` is the canonical V3 azd manifest: two agents, two
 toolboxes, no infrastructure and no production hooks. Skills are pinned at
-version 2 on each agent's top-level `skills` list, never inside its toolbox.
+version 2 on each agent's top-level `skills` list **and** on its toolbox.
 Both toolbox backend tools retain the exact OAuth2 connection names.
 Agent-to-toolbox authentication uses separate `RemoteTool` / `UserEntraToken`
 connections targeted only at the corresponding versioned first-party Foundry
 toolbox endpoint; it is not a fallback to the legacy APIM UET connections.
-All MCP entries require approval, in addition to conversational write confirmation.
+MCP entries use `require_approval: never` (Teams cannot render approval
+prompts); conversational confirmation in the instructions is the write guard.
 
-See `docs/v3-managed-harness-staging.md` for the resource inventory, scoped deploy
-commands and identity gates. Production `SKILLS_MODE=inline` and
-`C360_TOOLS_MODE=direct` remain unchanged. Do not run the root hook or create Agent
-Applications, bot resources or Teams routes for staging.
+Teams/M365 publishing uses the agent endpoint (Activity protocol +
+`BotServiceRbac`) with one new Azure Bot per agent (`bot-salesforce-assistant-v3`,
+`bot-customer360-assistant-v3`), created by `infra/modules/bot-service-v3.bicep`
+and published by `scripts/publish_v3.py`. Agent Applications cannot serve harness
+agents. See `docs/v3-managed-harness.md` for the inventory, deploy/publish
+commands, E2E and the ApiHub consent-expiry bug. Production `SKILLS_MODE=inline`
+and `C360_TOOLS_MODE=direct` remain unchanged for the legacy agents.
 
 Deployed staging result: both new agents and both toolboxes are at version 1,
 with matching version-bound toolbox auth connections. The live contract suite
