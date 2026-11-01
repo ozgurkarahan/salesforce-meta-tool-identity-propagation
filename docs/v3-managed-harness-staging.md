@@ -209,3 +209,39 @@ One toolbox-connection create initially failed in azd's credential discovery.
 After checking the existing sign-in and successful token acquisition (without
 printing tokens or starting login), the missing connection was created once,
 without overwrite. No auth configuration or role assignment was changed.
+
+## End-to-end identity-propagation results (2026-10-31, after consent)
+
+Runner: `python scripts\test_e2e_v3_harness.py --profile <salesforce|servicenow|customer360> [--only N] [--out file.json]`.
+It invokes each staged agent through its agent-scoped Responses endpoint
+(`Foundry-Features: MicrosoftCopilot=V1Preview`, conversation-based, non-streaming),
+answers `mcp_approval_request` items (writes only after an explicit user "yes"),
+verifies the backend identity in raw `mcp_call` outputs, removes its own test
+records and deletes every conversation it creates.
+
+| Agent | Scenarios | Result | Identity evidence |
+|---|---|---|---|
+| `servicenow-assistant-v3` | identity, read, write guard, confirmed work note | **4/4 PASS** (first run); final run 3/4 with one transient `discover` tool error | work note on `INC0010001` has `sys_updated_by = ozgurkarahan` |
+| `salesforce-assistant-v3` | whoami, SOQL read (skill), write guard, create/attribute/delete Task | **4/4 proven** across runs (scenario 3 once hit a platform `500 server_error`) | Task `CreatedBy` = the user's Salesforce username; deleted; final `COUNT() = 0` |
+| `customer360-assistant-v3` | 8 cross-system scenarios (whoami both, account + incidents, write guards, skills) | **8/8 PASS** (re-scored after a runner parser fix) | both backends resolve the signed-in user |
+
+APIM gateway logs (22:44–23:33 UTC) for the run window: `salesforce-mcp-obo`
+460×200 / 113×202, `servicenow-mcp-obo` 393×200 / 97×202, **no 5xx** (a few
+400/401 only at MCP session initialisation).
+
+### Operational caveats found
+
+* **Delegated consent did not survive the evening.** Mid-way through the final
+  run (~23:40 UTC) Salesforce calls, then ServiceNow calls, started returning
+  `oauth_consent_request` / MCP `-32006` again, about 12 h after the Salesforce
+  consent. APIM saw no 401 surge, so the token was lost in the Foundry connection
+  token store (refresh failure) before reaching the gateway. Conditional Access
+  has only a risk-based "reauthenticate every time" policy; sign-in logs were
+  not available to confirm. Users must be expected to re-consent periodically
+  until this is understood.
+* Transient platform errors were observed: `500 server_error`,
+  `500 session_creation_failed`, and one empty-message `discover` tool error.
+  The agents recovered on a fresh conversation.
+* In harness output every MCP call reports `server_label = managed_tools`; the
+  backend is derived from the tool name (`<server>___<tool>` or the disjoint
+  Salesforce/ServiceNow tool sets).
