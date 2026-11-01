@@ -1,3 +1,4 @@
 azure-ai-projects==2.8.0
 azure-identity
 openai
+PyYAML>=6.0,<7

@@ -138,6 +138,39 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 
 ---
 
+## Managed Harness V3 staging (2026-10-31)
+
+The Microsoft preview proof now succeeds with `kind=prompt`,
+`harness.type=microsoft_copilot_preview` and the existing `gpt-5.4-pro`
+deployment in `aiproj-sf-mcp-obo`. The older spike conclusions below describe the
+ordinary prompt / legacy GitHub harness path tested in October, not this new
+Microsoft harness path.
+
+`agents/azure.yaml` is the canonical V3 azd manifest: two agents, two
+toolboxes, no infrastructure and no production hooks. Skills are pinned at
+version 2 on each agent's top-level `skills` list **and** on its toolbox.
+Both toolbox backend tools retain the exact OAuth2 connection names.
+Agent-to-toolbox authentication uses separate `RemoteTool` / `UserEntraToken`
+connections targeted only at the corresponding versioned first-party Foundry
+toolbox endpoint; it is not a fallback to the legacy APIM UET connections.
+MCP entries use `require_approval: never` (Teams cannot render approval
+prompts); conversational confirmation in the instructions is the write guard.
+
+Teams/M365 publishing uses the agent endpoint (Activity protocol +
+`BotServiceRbac`) with one new Azure Bot per agent (`bot-salesforce-assistant-v3`,
+`bot-customer360-assistant-v3`), created by `infra/modules/bot-service-v3.bicep`
+and published by `scripts/publish_v3.py`. Agent Applications cannot serve harness
+agents. See `docs/v3-managed-harness.md` for the inventory, deploy/publish
+commands, E2E and the ApiHub consent-expiry bug. Production `SKILLS_MODE=inline`
+and `C360_TOOLS_MODE=direct` remain unchanged for the legacy agents.
+
+Deployed staging result: both new agents and both toolboxes are at version 1,
+with matching version-bound toolbox auth connections. The live contract suite
+passes 11/11 checks. Both current-user identity probes returned a toolbox OAuth
+consent request, so backend identity verification is still gated; no consent
+flow was started. All 11 existing agents, both backend OAuth2 connections, all 6
+Agent Applications and the existing model deployment are unchanged.
+
 ## v3 Spike — Skills + Toolbox (2026-10-14, env `sf-mcp-obo`)
 
 Script: `scripts/spike_toolbox_identity.py` (setup / chat / report / cleanup). Evidence is sanitized in `.spike/` (gitignored). **Cleanup (2026-10-17):** every `spike-*` agent and toolbox is deleted, and so are the unused v1 versions of the 6 skills (the live agents pin v2). The only leftover is the undeletable `spike-v3-salesforce-assistant` application and its 5 deployments (see #12), plus its 3 Entra Agent ID objects, which were deleted the same day (see #12).

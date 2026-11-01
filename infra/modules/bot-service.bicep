@@ -25,6 +25,9 @@ param tenantId string
 @description('App Insights instrumentation key (optional)')
 param appInsightsKey string = ''
 
+@description('App Insights application ID for bot analytics (optional; set only where the live bot already has it)')
+param appInsightsApplicationId string = ''
+
 // --- Bot Service ---
 resource botService 'Microsoft.BotService/botServices@2023-09-15-preview' = {
   name: botName
@@ -39,6 +42,7 @@ resource botService 'Microsoft.BotService/botServices@2023-09-15-preview' = {
     msaAppTenantId: tenantId
     msaAppType: 'SingleTenant'
     developerAppInsightKey: !empty(appInsightsKey) ? appInsightsKey : null
+    developerAppInsightsApplicationId: !empty(appInsightsApplicationId) ? appInsightsApplicationId : null
   }
 }
 

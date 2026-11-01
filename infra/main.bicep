@@ -44,6 +44,18 @@ param c360BotMsaAppId string = ''
 @description('Customer 360 Bot Service resource name (set by postprovision to adopt existing bot)')
 param c360BotName string = ''
 
+@description('V3 Salesforce agent instance identity client ID (enables its Teams bot; see scripts/publish_v3.py)')
+param v3SfBotMsaAppId string = ''
+
+@description('V3 Salesforce Teams bot name')
+param v3SfBotName string = 'bot-salesforce-assistant-v3'
+
+@description('V3 Customer 360 agent instance identity client ID (enables its Teams bot)')
+param v3C360BotMsaAppId string = ''
+
+@description('V3 Customer 360 Teams bot name')
+param v3C360BotName string = 'bot-customer360-assistant-v3'
+
 @description('Chat App Entra client ID (set by postprovision)')
 param chatAppEntraClientId string = ''
 
@@ -353,6 +365,7 @@ module botService 'modules/bot-service.bicep' = if (!empty(agentBotMsaAppId)) {
     msaAppId: agentBotMsaAppId
     tenantId: subscription().tenantId
     appInsightsKey: monitoring.outputs.appInsightsInstrumentationKey
+    appInsightsApplicationId: monitoring.outputs.appInsightsAppId
   }
 }
 
@@ -369,6 +382,39 @@ module botServiceC360 'modules/bot-service.bicep' = if (!empty(c360BotMsaAppId))
     msaAppId: c360BotMsaAppId
     tenantId: subscription().tenantId
     appInsightsKey: monitoring.outputs.appInsightsInstrumentationKey
+  }
+}
+
+// V3 managed-harness agents: one new Azure Bot per agent, pointing at the agent's own
+// Activity Protocol endpoint (agent-endpoint publishing). The legacy bots above stay
+// until V3 is validated in Teams.
+module botServiceV3Sf 'modules/bot-service-v3.bicep' = if (!empty(v3SfBotMsaAppId)) {
+  name: 'bot-service-v3-sf'
+  scope: rg
+  params: {
+    botName: v3SfBotName
+    displayName: 'Salesforce Assistant (V3)'
+    msaAppId: v3SfBotMsaAppId
+    tenantId: subscription().tenantId
+    cognitiveAccountName: cognitive.outputs.cognitiveAccountName
+    projectName: cognitive.outputs.projectName
+    agentName: 'salesforce-assistant-v3'
+    tags: tags
+  }
+}
+
+module botServiceV3C360 'modules/bot-service-v3.bicep' = if (!empty(v3C360BotMsaAppId)) {
+  name: 'bot-service-v3-c360'
+  scope: rg
+  params: {
+    botName: v3C360BotName
+    displayName: 'Customer 360 Assistant (V3)'
+    msaAppId: v3C360BotMsaAppId
+    tenantId: subscription().tenantId
+    cognitiveAccountName: cognitive.outputs.cognitiveAccountName
+    projectName: cognitive.outputs.projectName
+    agentName: 'customer360-assistant-v3'
+    tags: tags
   }
 }
 

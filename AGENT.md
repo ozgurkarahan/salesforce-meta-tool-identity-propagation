@@ -8,6 +8,17 @@ This file provides guidance to code agents when working with this repository.
 
 **Status:** v3 is deployed to `sf-mcp-obo` from `feat/v3-skills-toolbox` (2026-10-16; salesforce-assistant v31, customer360-assistant v23, post-route E2E 7/7, Teams smoke passed): Foundry skills, lean prompts, no agent memory, staged publish, and both agents in Teams. The SF MCP server's v3 image went live on 2026-10-17 after the `mcp<2` fix (E2E run 10: 7/7). v2 is live: OAuth2 identity passthrough (2026-07-29). The OBO flow is **verified end-to-end**, and SF Login History confirms per-user identity propagation. See `CHANGELOG.md` for the platform-forced v1→v2 migration and the v3 notes.
 
+**Managed Harness V3 — primary (2026-11-01):** `agents/azure.yaml` defines
+`salesforce-assistant-v3` (v2, `gpt-5.4-pro`) and `customer360-assistant-v3`
+(v3, `gpt-6.1-terra`), using `microsoft_copilot_preview`, per-user OAuth2
+version-pinned toolboxes (`require_approval: never`; the instructions enforce
+an explicit in-chat confirmation before every write), and skills on both the
+agent and the toolbox. They are published to Teams/M365 through their agent
+endpoints and new Azure Bots (`infra/modules/bot-service-v3.bicep`,
+`scripts/publish_v3.py`), not through Agent Applications, which cannot serve
+harness agents. The legacy agents/apps/bots (v31/v23) stay as rollback until
+V3 is validated in Teams. See `docs/v3-managed-harness.md`.
+
 ## Architecture
 
 ### Multi-Agent Headless Chat App
@@ -218,7 +229,10 @@ azd up
 - `src/shared/foundry_helpers.py` — shared agent call helpers (multi-agent: accepts `agent_name` + `project_endpoint`)
 
 **Hooks & Scripts:**
-- `hooks/postprovision.py` — certs, Entra app, OBO connection, chat-app settings, then (fatal) skills, agents, per-agent Agent Application + staged publish, Bot Service, Teams org catalog (non-fatal). `--rollback` restores the previous routes
+- `hooks/postprovision.py` — certs, Entra app, OBO connection, chat-app settings, then (fatal) skills, agents, per-agent Agent Application + staged publish, Bot Service, Teams org catalog (non-fatal). `--rollback` restores the previous routes. Legacy agents only; V3 is not managed by the hook
+- `agents/azure.yaml` — V3 managed-harness agents + toolboxes (azd project; deploy per service from `agents/`)
+- `scripts/publish_v3.py` — idempotent V3 Teams/M365 publish via agent endpoint (pin version, Activity + BotServiceRbac, `/microsoft365/publish`)
+- `scripts/test_e2e_v3_harness.py` — V3 E2E runner incl. adversarial write-guard scenarios
 - `skills/<name>/SKILL.md` — the six v3 skills (source of truth for Foundry skill versions)
 - `scripts/spike_toolbox_identity.py` — v3 go/no-go spike (toolbox identity, skills); sanitized evidence in `.spike/` (gitignored)
 - `assets/teams/` — Teams app icons (color.png 192x192, outline.png 32x32)
@@ -307,6 +321,18 @@ python scripts/setup-sf-org.py --org <alias> --email <email> --cleanup
 ```
 
 ---
+
+## How to Verify
+
+- V3 manifest contract: `python scripts/test_v3_harness.py`.
+- Published V3 definitions, toolbox authentication and pinned skill content:
+  `python scripts/test_v3_harness.py --live` (read-only, current Azure CLI account).
+- V3 publish script: `python scripts/test_publish_v3.py` (offline).
+- V3 deploy, publish and E2E runbook: `docs/v3-managed-harness.md`.
+- Existing Customer 360 runtime: `python scripts/test_e2e_customer360.py`
+  (requires the current user's consent; not a staging deployment command).
+- A successful deployment alone is not identity verification. Report pending
+  consent, account mismatch or missing backend tool evidence as an open gate.
 
 ## Workflow Rules
 
